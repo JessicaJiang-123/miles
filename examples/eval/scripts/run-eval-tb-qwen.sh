@@ -16,7 +16,7 @@ pkill -9 python
 set -ex
 
 export PYTHONBUFFERED=16
-export SLIME_HOST_IP=${SLIME_HOST_IP:-"127.0.0.1"}
+export MILES_HOST_IP=${MILES_HOST_IP:-"127.0.0.1"}
 
 MODEL_DIR="${MODEL_DIR:-/root/.cache}"
 export MODEL_DIR
@@ -39,8 +39,8 @@ EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/eval
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_DIR}/OpenThinker-Agent-v1 # huggingface-cli download open-thoughts/OpenThinker-Agent-v1
    --ref-load ${MODEL_DIR}/OpenThinker-Agent-v1_torch_dist
-   # --load ${MODEL_DIR}/OpenThinker-Agent-v1_slime/
-   --save ${MODEL_DIR}/OpenThinker-Agent-v1_slime/
+   # --load ${MODEL_DIR}/OpenThinker-Agent-v1_miles/
+   --save ${MODEL_DIR}/OpenThinker-Agent-v1_miles/
    --save-interval 20
 )
 
@@ -102,7 +102,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project slime-eval
+   --wandb-project miles-eval
    --wandb-group qwen3-8b-eval
    --wandb-key ${WANDB_KEY}   # export WANDB_KEY="your_key"
 )

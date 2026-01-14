@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple HTTP server that proxies Slime evaluation requests to the `tb run`
+Simple HTTP server that proxies Miles evaluation requests to the `tb run`
 command shipped with Terminal Bench.
 
 Usage:
@@ -8,7 +8,7 @@ Usage:
         --host 0.0.0.0 --port 9050 \
         --output-root /opt/tb-eval
 
-Slime (or Slime-compatible runners) should POST the payload described in
+Miles (or Miles-compatible runners) should POST the payload described in
 `EvalRequestPayload` to http://<host>:<port>/evaluate. The server blocks until
 `tb run` finishes, then returns aggregated metrics along with paths to the
 generated artifacts (logs + raw metrics).

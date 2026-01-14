@@ -1,24 +1,24 @@
 # Terminal Bench Eval
 
-This folder wires Terminal Bench (TB) into Slime as an eval delegate. The TB run happens on the host via the `tb` CLI, and Slime reads back aggregated metrics such as `accuracy`, `n_resolved`, `n_unresolved`, `pass_at_k/*`, and token stats like `total_input_tokens_mean/median` and `total_output_tokens_mean/median`.
+This folder wires Terminal Bench (TB) into Miles as an eval delegate. The TB run happens on the host via the `tb` CLI, and Miles reads back aggregated metrics such as `accuracy`, `n_resolved`, `n_unresolved`, `pass_at_k/*`, and token stats like `total_input_tokens_mean/median` and `total_output_tokens_mean/median`.
 
 ## What runs where
 
-- Slime runs your training/eval loop inside the Docker container.
-- Slime calls the TB delegate client.
+- Miles runs your training/eval loop inside the Docker container.
+- Miles calls the TB delegate client.
 - The TB delegate server (`tb_server.py`) runs `tb run ...` on the host.
-- The server reads the latest TB JSON results and returns metrics to Slime.
+- The server reads the latest TB JSON results and returns metrics to Miles.
 
 ## 1) Get the code (host)
 
 ```bash
-mkdir slime-tb
-cd slime-tb
-git clone https://github.com/THUDM/slime.git
+mkdir miles-tb
+cd miles-tb
+git clone https://github.com/radixark/miles.git
 git clone https://github.com/laude-institute/terminal-bench
 ```
 
-## 2) Launch the Slime container
+## 2) Launch the Miles container
 
 ```bash
 docker run \
@@ -32,16 +32,16 @@ docker run \
   --ulimit stack=67108864 \
   --ulimit nofile=65536:65536 \
   -v /mnt/data/.cache:/root/.cache \
-  -v $(pwd):/shared/slime-tb \
-  --name <slime container name> \
-  slimerl/slime:latest \
+  -v $(pwd):/shared/miles-tb \
+  --name <miles container name> \
+  radixark/miles:latest \
   /bin/bash
 ```
 
-## 3) Inside the Slime container
+## 3) Inside the Miles container
 
 ```bash
-docker exec -it <slime container name> /bin/bash
+docker exec -it <miles container name> /bin/bash
 ```
 
 ## 4) Terminal Bench environment (host)
@@ -54,18 +54,18 @@ uv venv --python 3.13 .venv
 source .venv/bin/activate
 
 uv pip install terminal-bench/.
-uv pip install -r slime/examples/eval/terminal_bench/requirements.txt
+uv pip install -r miles/examples/eval/terminal_bench/requirements.txt
 ```
 
 Notes:
-- Use your local repo paths if they are not `./slime` and `./terminal-bench`.
+- Use your local repo paths if they are not `./miles` and `./terminal-bench`.
 
 ## 5) Start the Terminal Bench server
 
 Run on the host (same machine where `tb` works):
 
 ```bash
-python slime/examples/eval/terminal_bench/tb_server.py \
+python miles/examples/eval/terminal_bench/tb_server.py \
   --host 0.0.0.0 --port 9051 \
   --output-root tb_eval_output
 ```
@@ -83,20 +83,20 @@ If you use the provided Qwen eval launcher (`run-eval-tb-qwen.sh`), follow the s
 
 First, update the `dataset_path` in `eval_tb_example.yaml` to the local path of `terminal-bench/tasks` on your host (not an internal Docker-only path). 
 
-Then download the HuggingFace model checkpoint inside the Slime container:
+Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
 huggingface-cli download open-thoughts/OpenThinker-Agent-v1 \
 --local-dir /root/.cache/OpenThinker-Agent-v1
 ```
 
-After downloading, convert the HuggingFace checkpoint to Slime's torch distributed format. From the Slime root directory, run:
+After downloading, convert the HuggingFace checkpoint to Miles's torch distributed format. From the Miles root directory, run:
 
 ```bash
-cd /shared/slime-tb/slime
+cd /shared/miles-tb/miles
 source scripts/models/qwen3-8B.sh
 
-export PYTHONPATH=/root/Megatron-LM:/shared/slime-tb/slime
+export PYTHONPATH=/root/Megatron-LM:/shared/miles-tb/miles
 
 python tools/convert_hf_to_torch_dist.py \
   ${MODEL_ARGS[@]} \
@@ -104,23 +104,23 @@ python tools/convert_hf_to_torch_dist.py \
   --save /root/.cache/OpenThinker-Agent-v1_torch_dist
 ```
 
-Finally, run the following command inside the Slime container:
+Finally, run the following command inside the Miles container:
 
 ```bash
-bash slime/examples/eval/scripts/run-eval-tb-qwen.sh 2>&1 | tee run.log
+bash miles/examples/eval/scripts/run-eval-tb-qwen.sh 2>&1 | tee run.log
 ```
 
 For convenience, you can restrict the evaluation scope in `eval_tb_example.yaml`, either by specifying a single task or multiple tasks (`task_ids`), or by limiting the number of tasks via `n_tasks`.
 
 ## 7) Common Issues
 
-When running Slime inside a Docker container with `--network host`, Ray may encounter port conflicts due to shared networking with the host.
+When running Miles inside a Docker container with `--network host`, Ray may encounter port conflicts due to shared networking with the host.
 
 In some cases, this manifests as Ray failing to start or reporting Redis- or session-related errors. This can usually be resolved by explicitly assigning unused ports when starting the Ray head node, for example by setting a non-default `--port` and `--dashboard-port`.
 
 In more severe cases, Ray job submission may fail with errors indicating that no available agent can accept jobs. This typically happens when the dashboard agent or runtime environment agent ports are also in conflict. In such situations, explicitly specifying the agent-related ports (e.g. `--dashboard-agent-listen-port`, `--dashboard-agent-grpc-port`, and `--runtime-env-agent-port`) when starting Ray can resolve the issue.
 
-If the TB server cannot connect to the Slime server through the sglang router (`InternalServerError`), check which address is actually listening on the router port (e.g. 30005 in this example) and update the `api_base` in `eval_tb_example.yaml` accordingly:
+If the TB server cannot connect to the Miles server through the sglang router (`InternalServerError`), check which address is actually listening on the router port (e.g. 30005 in this example) and update the `api_base` in `eval_tb_example.yaml` accordingly:
 
 ```bash
 ss -lntp | grep 30005
