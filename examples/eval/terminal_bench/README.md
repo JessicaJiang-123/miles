@@ -37,11 +37,14 @@ docker run \
   radixark/miles:latest \
   /bin/bash
 ```
-
+<!-- docker run -itd --shm-size 32g --gpus all -v /data/cache/huggingface:/root/.cache/huggingface -v /data:/data --ipc=host --ulimit nofile=65536:65536 --ulimit memlock=-1 --ulimit stack=67108864 --privileged --name sglang-rl-xinyu-jiang slimerl/slime:latest /bin/bash -->
+docker run -itd --shm-size 32g --gpus all --network host -v /data/cache/huggingface:/root/.cache/huggingface -v /data:/data --ipc=host --ulimit nofile=65536:65536 --ulimit memlock=-1 --ulimit stack=67108864 --privileged --name sglang-rl-xinyu-jiang3 radixark/miles:latest /bin/bash
+/data/zhiyao/slime-tb
 ## 3) Inside the Miles container
 
 ```bash
-docker exec -it <miles container name> /bin/bash
+# docker exec -it sglang-rl-xinyu-jiang /bin/bash
+docker exec -it sglang-rl-xinyu-jiang3 /bin/bash
 ```
 
 ## 4) Terminal Bench environment (host)
@@ -50,7 +53,9 @@ Run on the machine that will host `tb_server.py` (where you cloned both repos):
 
 ```bash
 # Host machine terminal (outside Docker)
-uv venv --python 3.13 .venv
+uv venv --python 3.13 .venv # without uv at radixark02
+# python3 -m venv .venv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 source .venv/bin/activate
 
 uv pip install terminal-bench/.
@@ -87,21 +92,24 @@ Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
 huggingface-cli download open-thoughts/OpenThinker-Agent-v1 \
---local-dir /root/.cache/OpenThinker-Agent-v1
+--local-dir /root/.cache/huggingface/OpenThinker-Agent-v1
+# --local-dir /root/.cache/OpenThinker-Agent-v1
 ```
 
 After downloading, convert the HuggingFace checkpoint to Miles's torch distributed format. From the Miles root directory, run:
 
 ```bash
-cd /shared/miles-tb/miles
+# cd /shared/miles-tb/miles
+cd /data/zhiyao/slime-tb/miles
 source scripts/models/qwen3-8B.sh
 
-export PYTHONPATH=/root/Megatron-LM:/shared/miles-tb/miles
+# export PYTHONPATH=/root/Megatron-LM:/shared/miles-tb/miles
+export PYTHONPATH=/root/Megatron-LM:/data/zhiyao/slime-tb/miles
 
 python tools/convert_hf_to_torch_dist.py \
   ${MODEL_ARGS[@]} \
-  --hf-checkpoint /root/.cache/OpenThinker-Agent-v1 \
-  --save /root/.cache/OpenThinker-Agent-v1_torch_dist
+  --hf-checkpoint /root/.cache/huggingface/OpenThinker-Agent-v1 \
+  --save /root/.cache/huggingface/OpenThinker-Agent-v1_torch_dist
 ```
 
 Finally, run the following command inside the Miles container:
