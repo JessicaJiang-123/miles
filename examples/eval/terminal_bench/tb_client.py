@@ -46,9 +46,16 @@ class TerminalBenchClient(EvalClient):
             "n_tasks": self._config.n_tasks,
             "n_concurrent": self._config.n_concurrent,
             "metric_prefix": self._config.name,
+            "runner": self._config.runner,
         }
-        if self._config.dataset_path:
-            payload["dataset_path"] = self._config.dataset_path
+        if self._config.runner == "tb":
+            if self._config.dataset_path:
+                payload["dataset_path"] = self._config.dataset_path
+        else:
+            payload["dataset_name"] = self._config.dataset_name
+            payload["dataset_version"] = self._config.dataset_version
+            payload["jobs_dir"] = self._config.jobs_dir
+            payload["job_name"] = self._config.job_name
         if self._config.task_ids:
             payload["task_ids"] = list(self._config.task_ids)
         if self._config.n_attempts is not None:

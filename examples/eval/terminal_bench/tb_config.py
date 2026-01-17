@@ -13,6 +13,11 @@ class TerminalBenchConfig(EvalEnvConfig):
 
     model_name: str = "qwen3-8b"
     api_base: str = "http://127.0.1.1:30001/v1"
+    runner: str = "harbor"
+    dataset_name: str = "terminal-bench"
+    dataset_version: str = "2.0"
+    jobs_dir: str | None = "jobs"
+    job_name: str | None = None
     dataset_path: str | None = None
     n_tasks: int | None = None
     task_ids: list[str] = field(default_factory=list)
@@ -28,6 +33,11 @@ class TerminalBenchConfig(EvalEnvConfig):
         field_casts = {
             "model_name": str,
             "api_base": str,
+            "runner": str,
+            "dataset_name": str,
+            "dataset_version": str,
+            "jobs_dir": str,
+            "job_name": str,
             "n_attempts": int,
             "n_tasks": int,
             "n_concurrent": int,
@@ -38,6 +48,9 @@ class TerminalBenchConfig(EvalEnvConfig):
             value = clean_raw.get(key)
             if value is not None:
                 setattr(base_cfg, key, caster(value))
+
+        if base_cfg.runner:
+            base_cfg.runner = str(base_cfg.runner).strip().lower()
 
         task_ids = clean_raw.get("task_ids")
         if isinstance(task_ids, (list, tuple)):

@@ -18,7 +18,7 @@ set -ex
 export PYTHONBUFFERED=16
 export MILES_HOST_IP=${MILES_HOST_IP:-"127.0.0.1"}
 
-MODEL_DIR="${MODEL_DIR:-/root/.cache}"
+MODEL_DIR="${MODEL_DIR:-/root/.cache/huggingface}"
 export MODEL_DIR
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -51,8 +51,8 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 3000
-   --rollout-batch-size 32
+   --num-rollout 500
+   --rollout-batch-size 16
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 0.8
@@ -61,7 +61,7 @@ ROLLOUT_ARGS=(
 )
 
 EVAL_ARGS=(
-   --eval-interval 5
+   --eval-interval 1
    --eval-config "${EVAL_CONFIG_PATH}"
    --eval-function-path examples.eval.eval_delegate_rollout.generate_rollout
 )
@@ -122,9 +122,10 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=4,5,6,7
+# export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 2 \
+ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 4 \
             --disable-usage-stats \
             --dashboard-host=0.0.0.0 \
             --dashboard-port=8266 \
@@ -145,7 +146,7 @@ ray job submit --address="http://${MASTER_ADDR}:8266" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 4 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

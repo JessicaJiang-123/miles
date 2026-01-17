@@ -1,12 +1,12 @@
 # Terminal Bench Eval
 
-This folder wires Terminal Bench (TB) into Miles as an eval delegate. The TB run happens on the host via the `tb` CLI, and Miles reads back aggregated metrics such as `accuracy`, `n_resolved`, `n_unresolved`, `pass_at_k/*`, and token stats like `total_input_tokens_mean/median` and `total_output_tokens_mean/median`.
+This folder wires Terminal Bench (TB) into Miles as an eval delegate. The run happens on the host via `harbor run` (Terminal Bench 2.0, default) or `tb run` (Terminal Bench 1.0, legacy). Miles reads back aggregated metrics such as `accuracy`, `n_resolved`, `n_unresolved`, `pass_at_k/*`, and token stats like `total_input_tokens_mean/median` and `total_output_tokens_mean/median`.
 
 ## What runs where
 
 - Miles runs your training/eval loop inside the Docker container.
 - Miles calls the TB delegate client.
-- The TB delegate server (`tb_server.py`) runs `tb run ...` on the host.
+- The TB delegate server (`tb_server.py`) runs `harbor run ...` or `tb run ...` on the host.
 - The server reads the latest TB JSON results and returns metrics to Miles.
 
 ## 1) Get the code (host)
@@ -46,15 +46,26 @@ docker exec -it <miles container name> /bin/bash
 
 ## 4) Terminal Bench environment (host)
 
-Run on the machine that will host `tb_server.py` (where you cloned both repos):
+Run on the machine that will host `tb_server.py`:
 
 ```bash
 # Host machine terminal (outside Docker)
 uv venv --python 3.13 .venv
 source .venv/bin/activate
-
-uv pip install terminal-bench/.
 uv pip install -r miles/examples/eval/terminal_bench/requirements.txt
+```
+
+Terminal Bench 2.0 (default, via harbor):
+
+```bash
+uv tool install harbor
+```
+
+Terminal Bench 1.0 (legacy, via tb CLI):
+
+```bash
+git clone https://github.com/laude-institute/terminal-bench
+uv pip install terminal-bench/.
 ```
 
 Notes:
@@ -72,7 +83,8 @@ python miles/examples/eval/terminal_bench/tb_server.py \
 
 What it does:
 - Uses `OPENAI_API_KEY=EMPTY`
-- Runs `tb run -a terminus-2 -m openai/<model> ... --n-concurrent 8`
+- Runs `harbor run -d terminal-bench@2.0 -a terminus-2 -m openai/<model> ... -n 8` by default
+- Supports `tb run ... --n-concurrent 8` when `runner: tb` is used
 - Waits for completion, then returns `accuracy`, `n_resolved`,
   `n_unresolved`, `pass_at_k/*`, and token stats such as
   `total_input_tokens_mean/median` and `total_output_tokens_mean/median`
@@ -81,7 +93,9 @@ What it does:
 
 If you use the provided Qwen eval launcher (`run-eval-tb-qwen.sh`), follow the steps below to run Terminal-Bench evaluation.
 
-First, update the `dataset_path` in `eval_tb_example.yaml` to the local path of `terminal-bench/tasks` on your host (not an internal Docker-only path). 
+For Terminal Bench 2.0, set `runner: harbor` and specify `dataset_name`, `dataset_version`, and `jobs_dir` in `eval_tb_example.yaml`. No local `terminal-bench/tasks` path is needed.
+
+For Terminal Bench 1.0, set `runner: tb` and update the `dataset_path` to the local path of `terminal-bench/tasks` on your host (not an internal Docker-only path). 
 
 Then download the HuggingFace model checkpoint inside the Miles container:
 
