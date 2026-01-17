@@ -18,7 +18,7 @@ set -ex
 export PYTHONBUFFERED=16
 export MILES_HOST_IP=${MILES_HOST_IP:-"127.0.0.1"}
 
-MODEL_DIR="${MODEL_DIR:-/root/.cache}"
+MODEL_DIR="${MODEL_DIR:-/root/.cache/huggingface}"
 export MODEL_DIR
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
@@ -51,7 +51,8 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 3000
+   # --num-rollout 3000
+   --num-rollout 1
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
@@ -61,7 +62,8 @@ ROLLOUT_ARGS=(
 )
 
 EVAL_ARGS=(
-   --eval-interval 5
+   # --eval-interval 5
+   --eval-interval 1
    --eval-config "${EVAL_CONFIG_PATH}"
    --eval-function-path examples.eval.eval_delegate_rollout.generate_rollout
 )
@@ -102,7 +104,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-eval
+   --wandb-project miles-tb
    --wandb-group qwen3-8b-eval
    --wandb-key ${WANDB_KEY}   # export WANDB_KEY="your_key"
 )

@@ -6,10 +6,10 @@ eval:
     top_k: -1
     max_response_len: 24576
   datasets: # these eval tasks go through miles dataset config and default rollout function (miles.rollout.sglang_rollout.generate_rollout)
-    - name: gpqa    # huggingface-cli download --repo-type dataset zyzshishui0627/gpqa_diamond --local-dir /root/gpqa
-      path: /root/gpqa/gpqa_eval.jsonl
-      rm_type: gpqa
-      n_samples_per_eval_prompt: 2
+    # - name: gpqa    # huggingface-cli download --repo-type dataset zyzshishui0627/gpqa_diamond --local-dir /root/gpqa
+    #   path: /root/gpqa/gpqa_eval.jsonl
+    #   rm_type: gpqa
+    #   n_samples_per_eval_prompt: 2
     - name: ifbench   # huggingface-cli download --repo-type dataset zyzshishui0627/IFBench --local-dir /root/ifbench
       path: /root/ifbench/IFBench_eval.jsonl
       rm_type: ifbench
@@ -21,9 +21,9 @@ eval:
       max_retries: 1 # HTTP request retries from Miles to the TB server
       model_name: qwen3-8b
       api_base: http://127.0.0.1:30005/v1 # Port must match the sglang router port set in run-eval-tb-qwen.sh
-      dataset_path: /mnt/data/xinyu/program/miles-tb/terminal-bench/tasks # Dataset path on the host machine
+      dataset_path: /data/zhiyao/miles-tb/terminal-bench/tasks # Dataset path on the host machine
       # task_ids: 
       #   - hello-world
       # n_tasks: 10
       n_attempts: 1 # TB task-level retries (per task within tb run)
-      n_concurrent: 8
+      n_concurrent: 4
