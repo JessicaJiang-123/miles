@@ -26,4 +26,4 @@ eval:
       #   - hello-world
       # n_tasks: 10
       n_attempts: 1 # TB task-level retries (per task within tb run)
-      n_concurrent: 4
+      n_concurrent: 8
