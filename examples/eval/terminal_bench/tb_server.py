@@ -280,7 +280,8 @@ class TerminalBenchEvaluator:
         jobs_dir = payload.output_path
         if jobs_dir:
             cmd.extend(["--jobs-dir", jobs_dir])
-        cmd.extend(["--job-name", job_name])
+        if job_name:
+            cmd.extend(["--job-name", job_name])
 
         task_ids = [str(item) for item in (payload.task_ids or []) if item]
         if task_ids:
