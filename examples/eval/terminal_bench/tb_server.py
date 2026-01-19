@@ -51,6 +51,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 @dataclass
 class EvalRequestPayload:
     model_name: str = ""
+    agent_name: str | None = None
     api_base: str = ""
     runner: str | None = None
     dataset_name: str | None = None
@@ -258,6 +259,10 @@ class TerminalBenchEvaluator:
         if model_name:
             cmd.extend(["--model", model_name])
 
+        agent_name = (payload.agent_name or "terminus-2").strip()
+        if agent_name:
+            cmd.extend(["--agent", agent_name])
+
         if payload.api_base:
             cmd.extend(["--agent-kwarg", f"api_base={payload.api_base}"])
 
@@ -274,8 +279,6 @@ class TerminalBenchEvaluator:
             "run",
             "-d",
             f"{dataset_name}@{dataset_version}",
-            "-a",
-            "terminus-2",
         ]
         if payload.jobs_dir:
             cmd.extend(["--jobs-dir", payload.jobs_dir])
@@ -299,8 +302,6 @@ class TerminalBenchEvaluator:
             "run",
             "-d",
             f"{dataset_name}=={dataset_version}",
-            "-a",
-            "terminus-2",
             "--output-path",
             str(self._config.output_root),
             "--run-id",

@@ -54,6 +54,7 @@ class TerminalBenchClient(EvalClient):
     def _base_payload(self) -> dict[str, Any]:
         payload = {
             "model_name": self._config.model_name,
+            "agent_name": self._config.agent_name,
             "api_base": self._config.api_base,
             "n_concurrent": self._config.n_concurrent,
             "metric_prefix": self._config.name,

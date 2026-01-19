@@ -12,6 +12,7 @@ class TerminalBenchConfig(EvalEnvConfig):
     """Environment configuration shared by the Terminal Bench client/server."""
 
     model_name: str = "qwen3-8b"
+    agent_name: str = "terminus-2"
     api_base: str = "http://127.0.1.1:30001/v1"
     runner: str = "harbor"
     dataset_name: str = "terminal-bench"
@@ -31,6 +32,7 @@ class TerminalBenchConfig(EvalEnvConfig):
 
         field_casts = {
             "model_name": str,
+            "agent_name": str,
             "api_base": str,
             "runner": str,
             "dataset_name": str,
