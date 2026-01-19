@@ -5,8 +5,7 @@ or `harbor run` (2.0), depending on the request payload.
 
 Usage:
     python examples/eval/terminal_bench/tb_server.py \
-        --host 0.0.0.0 --port 9050 \
-        --output-root /opt/tb-eval
+        --host 0.0.0.0 --port 9050
 
 Miles (or Miles-compatible runners) should POST the payload described in
 `EvalRequestPayload` to http://<host>:<port>/evaluate. The server blocks until
@@ -147,13 +146,16 @@ class TerminalBenchEvaluator:
         job_id = uuid.uuid4().hex
         run_id = f"{int(time.time())}-{job_id[:8]}"
         runner = _normalize_runner(payload.runner)
+        job_name = None
         if runner == "harbor":
             jobs_dir = Path(payload.output_path or "jobs").expanduser()
             jobs_dir.mkdir(parents=True, exist_ok=True)
             job_name = run_id
             run_dir = jobs_dir / job_name
         else:
-            run_dir = self._config.output_root / run_id
+            tb_root = Path(payload.output_path or self._config.output_root).expanduser()
+            tb_root.mkdir(parents=True, exist_ok=True)
+            run_dir = tb_root / run_id
 
         command = self._build_command(payload, run_id, runner, job_name)
         command_str = " ".join(shlex.quote(part) for part in command)
@@ -356,6 +358,7 @@ class TerminalBenchEvaluator:
                 metrics_path,
                 model_name=_normalize_model_name(payload.model_name),
                 dataset_name=(payload.dataset_name or "terminal-bench"),
+                agent_name=(payload.agent_name or "terminus-2"),
             )
         else:
             metrics_path = run_dir / "results.json"
@@ -436,6 +439,7 @@ class TerminalBenchEvaluator:
         *,
         model_name: str,
         dataset_name: str,
+        agent_name: str,
     ) -> dict[str, Any]:
         try:
             with open(metrics_path, encoding="utf-8") as fp:
@@ -453,7 +457,6 @@ class TerminalBenchEvaluator:
 
         accuracy = None
         if isinstance(evals, dict):
-            agent_name = "terminus-2"
             candidates = [
                 f"{agent_name}__{model_name}__{dataset_name}",
                 f"{agent_name}__{model_name}__terminal-bench",

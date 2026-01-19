@@ -41,14 +41,13 @@ class TerminalBenchClient(EvalClient):
 
     def _build_payload(self, args, rollout_id: int) -> dict[str, Any]:
         payload = self._base_payload()
-        if self._config.runner == "tb":
-            payload.update(self._payload_tb())
-        elif self._config.runner == "harbor":
-            payload.update(self._payload_harbor())
-        else:
+        runner = self._config.runner
+        if runner not in {"tb", "harbor"}:
             raise ValueError(
-                f"Invalid runner: {self._config.runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
             )
+        if runner == "tb":
+            payload.update(self._payload_tb())
         return payload
     
     def _base_payload(self) -> dict[str, Any]:
