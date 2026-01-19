@@ -51,11 +51,12 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 500
-   --rollout-batch-size 16
+   # --num-rollout 3000
+   --num-rollout 1
+   --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-temperature 1
    --global-batch-size 256
    --balance-data
 )
@@ -102,7 +103,7 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-eval
+   --wandb-project miles-tb
    --wandb-group qwen3-8b-eval
    --wandb-key ${WANDB_KEY}   # export WANDB_KEY="your_key"
 )
@@ -122,16 +123,25 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=4,5,6,7
+export CUDA_VISIBLE_DEVICES=6,7
+# export CUDA_VISIBLE_DEVICES=4,5,6,7
 # export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 4 \
+# ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 2 \
+#             --disable-usage-stats \
+#             --dashboard-host=0.0.0.0 \
+#             --dashboard-port=8266 \
+#             --dashboard-agent-listen-port 52366 \
+#             --dashboard-agent-grpc-port 52367 \
+#             --runtime-env-agent-port 52368
+
+ray start --head --node-ip-address ${MASTER_ADDR} --port 6381 --num-gpus 2 \
             --disable-usage-stats \
             --dashboard-host=0.0.0.0 \
-            --dashboard-port=8266 \
-            --dashboard-agent-listen-port 52366 \
-            --dashboard-agent-grpc-port 52367 \
-            --runtime-env-agent-port 52368
+            --dashboard-port=8267 \
+            --dashboard-agent-listen-port 52266 \
+            --dashboard-agent-grpc-port 52267 \
+            --runtime-env-agent-port 52268
 
 
 RUNTIME_ENV_JSON="{
@@ -141,12 +151,12 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-ray job submit --address="http://${MASTER_ADDR}:8266" \
+ray job submit --address="http://${MASTER_ADDR}:8267" \
    --working-dir "${REPO_ROOT}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 4 \
+   --actor-num-gpus-per-node 2 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
