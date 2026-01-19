@@ -21,12 +21,12 @@ import json
 import logging
 import os
 import shlex
+import statistics
 import subprocess
 import sys
 import threading
 import time
 import uuid
-import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -123,7 +123,7 @@ class ServerConfig:
     output_root: Path
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> "ServerConfig":
+    def from_args(cls, args: argparse.Namespace) -> ServerConfig:
         return cls(output_root=Path(args.output_root).expanduser().resolve())
 
 
@@ -381,7 +381,7 @@ class TerminalBenchEvaluator:
             return {}
 
         metrics: dict[str, Any] = {}
-        
+
         # core metrics
         accuracy = metrics_data.get("accuracy")
         if isinstance(accuracy, (int, float)):
@@ -584,6 +584,7 @@ def build_app(evaluator: TerminalBenchEvaluator) -> Flask:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Terminal Bench evaluation HTTP server.")
