@@ -17,8 +17,7 @@ class TerminalBenchConfig(EvalEnvConfig):
     runner: str = "harbor"
     dataset_name: str = "terminal-bench"
     dataset_version: str = "2.0"
-    jobs_dir: str | None = "jobs"
-    job_name: str | None = None
+    output_path: str | None = None
     n_tasks: int | None = None
     task_ids: list[str] = field(default_factory=list)
     n_attempts: int | None = None
@@ -37,8 +36,7 @@ class TerminalBenchConfig(EvalEnvConfig):
             "runner": str,
             "dataset_name": str,
             "dataset_version": str,
-            "jobs_dir": str,
-            "job_name": str,
+            "output_path": str,
             "n_attempts": int,
             "n_tasks": int,
             "n_concurrent": int,

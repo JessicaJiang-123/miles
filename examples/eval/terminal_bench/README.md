@@ -77,8 +77,7 @@ Run on the host (same machine where `tb` works):
 
 ```bash
 python miles/examples/eval/terminal_bench/tb_server.py \
-  --host 0.0.0.0 --port 9051 \
-  --output-root tb_eval_output
+  --host 0.0.0.0 --port 9051 
 ```
 
 What it does:

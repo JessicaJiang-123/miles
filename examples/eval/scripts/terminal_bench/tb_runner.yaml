@@ -23,9 +23,10 @@ eval:
       agent_name: terminus-2
       api_base: http://127.0.0.1:30005/v1 # Port must match the sglang router port set in run-eval-tb-qwen.sh
       runner: tb
-      dataset_path: /data/zhiyao/miles-tb/terminal-bench/tasks # TB 1.0 only
-      task_ids: 
-        - hello-world
+      dataset_name: terminal-bench-core
+      dataset_version: "0.1.1"
+      output_path: tb_runner_jobs
+      # task_ids: 
+      #   - hello-world
       # n_tasks: 10
-      # n_attempts: 1 # TB 1.0 only (per task within tb run)
       n_concurrent: 8

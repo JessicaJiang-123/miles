@@ -17,6 +17,7 @@ generated artifacts (logs + raw metrics).
 from __future__ import annotations
 
 import argparse
+import cmd
 import json
 import logging
 import os
@@ -56,15 +57,13 @@ class EvalRequestPayload:
     runner: str | None = None
     dataset_name: str | None = None
     dataset_version: str | None = None
-    jobs_dir: str | None = None
-    job_name: str | None = None
     n_tasks: int | None = None
     n_concurrent: int | None = None
     dataset_path: str | None = None
     task_ids: list[str] | None = None
     n_attempts: int | None = None
     metric_prefix: str | None = None
-
+    output_path: str | None = None
 
 @dataclass
 class JobRecord:
@@ -152,10 +151,9 @@ class TerminalBenchEvaluator:
         runner = _normalize_runner(payload.runner)
         job_name = payload.job_name
         if runner == "harbor":
-            jobs_dir = Path(payload.jobs_dir or "jobs").expanduser()
+            jobs_dir = Path(payload.output_path or "jobs").expanduser()
             jobs_dir.mkdir(parents=True, exist_ok=True)
-            if not job_name:
-                job_name = run_id
+            job_name = run_id
             run_dir = jobs_dir / job_name
         else:
             run_dir = self._config.output_root / run_id
@@ -280,10 +278,10 @@ class TerminalBenchEvaluator:
             "-d",
             f"{dataset_name}@{dataset_version}",
         ]
-        if payload.jobs_dir:
-            cmd.extend(["--jobs-dir", payload.jobs_dir])
-        if job_name:
-            cmd.extend(["--job-name", job_name])
+        jobs_dir = payload.output_path
+        if jobs_dir:
+            cmd.extend(["--jobs-dir", jobs_dir])
+        cmd.extend(["--job-name", job_name])
 
         task_ids = [str(item) for item in (payload.task_ids or []) if item]
         if task_ids:
@@ -302,11 +300,10 @@ class TerminalBenchEvaluator:
             "run",
             "-d",
             f"{dataset_name}=={dataset_version}",
-            "--output-path",
-            str(self._config.output_root),
-            "--run-id",
-            run_id,
         ]
+        output_root = str(Path(payload.output_path or self._config.output_root).expanduser())
+        cmd.extend(["--output-path", output_root, "--run-id", run_id])
+
         if payload.n_attempts is not None:
             cmd.extend(["--n-attempts", str(payload.n_attempts)])
         
@@ -354,7 +351,7 @@ class TerminalBenchEvaluator:
             metrics_path = run_dir / "result.json"
             if not metrics_path.exists():
                 fallback = TerminalBenchEvaluator._find_latest_result(
-                    Path(payload.jobs_dir or "jobs").expanduser()
+                    Path(payload.output_path or "jobs").expanduser()
                 )
                 if fallback is not None:
                     metrics_path = fallback

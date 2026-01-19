@@ -59,6 +59,7 @@ class TerminalBenchClient(EvalClient):
             "n_concurrent": self._config.n_concurrent,
             "metric_prefix": self._config.name,
             "runner": self._config.runner,
+            "output_path": self._config.output_path,
         }
         if self._config.task_ids:
             payload["task_ids"] = list(self._config.task_ids)
@@ -76,8 +77,6 @@ class TerminalBenchClient(EvalClient):
         return {
             "dataset_name": self._config.dataset_name,
             "dataset_version": self._config.dataset_version,
-            "jobs_dir": self._config.jobs_dir,
-            "job_name": self._config.job_name,
         }
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:

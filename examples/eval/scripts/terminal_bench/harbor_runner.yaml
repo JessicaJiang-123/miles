@@ -25,8 +25,7 @@ eval:
       runner: harbor
       dataset_name: terminal-bench
       dataset_version: "2.0"
-      jobs_dir: jobs
-      # job_name: qwen3-8b-tb-eval
-      task_ids:
-        - adaptive-rejection-sampler
+      output_path: harbor_runner_jobs
+      # task_ids:
+      #   - adaptive-rejection-sampler
       n_concurrent: 8
