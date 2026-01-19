@@ -49,8 +49,14 @@ class TerminalBenchConfig(EvalEnvConfig):
             if value is not None:
                 setattr(base_cfg, key, caster(value))
 
-        if base_cfg.runner:
-            base_cfg.runner = str(base_cfg.runner).strip().lower()
+        runner = (base_cfg.runner or "").strip().lower()
+        if not runner:
+            runner = "harbor"
+        elif runner not in {"tb", "harbor"}:
+            raise ValueError(
+                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+            )
+        base_cfg.runner = runner
 
         task_ids = clean_raw.get("task_ids")
         if isinstance(task_ids, (list, tuple)):
@@ -59,8 +65,6 @@ class TerminalBenchConfig(EvalEnvConfig):
             raise ValueError("task_ids must be a list")
 
         return base_cfg
-
-
 
 def build_terminal_bench_config(args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]):
     return TerminalBenchConfig.parse(args, raw_env_config, defaults)

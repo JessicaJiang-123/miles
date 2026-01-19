@@ -111,13 +111,15 @@ def _normalize_model_name(model_name: str) -> str:
         return name
     return f"openai/{name}"
 
-
 def _normalize_runner(runner: str | None) -> str:
     value = (runner or "").strip().lower()
-    if value in {"tb", "terminal-bench", "terminal_bench", "1.0", "v1"}:
-        return "tb"
-    return "harbor"
-
+    if not value:
+        return "harbor"
+    if value in {"tb", "harbor"}:
+        return value
+    raise ValueError(
+        f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+    )
 
 @dataclass
 class ServerConfig:
@@ -324,7 +326,9 @@ class TerminalBenchEvaluator:
         elif runner == "tb":
             cmd = self._build_tb_command(payload, run_id)
         else:
-            raise ValueError(f"Unsupported runner: {runner}")
+            raise ValueError(
+                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+            )
 
         model_name = _normalize_model_name(payload.model_name)
         if model_name:
@@ -332,13 +336,6 @@ class TerminalBenchEvaluator:
 
         if payload.api_base:
             cmd.extend(["--agent-kwarg", f"api_base={payload.api_base}"])
-
-        task_ids = [str(item) for item in (payload.task_ids or []) if item]
-        if task_ids:
-            for task_id in task_ids:
-                cmd.extend(["--task-id", task_id])
-        elif payload.n_tasks is not None:
-            cmd.extend(["--n-tasks", str(payload.n_tasks)])
 
         n_concurrent = payload.n_concurrent if payload.n_concurrent is not None else 1
         cmd.extend(["--n-concurrent", str(n_concurrent)])
@@ -360,6 +357,14 @@ class TerminalBenchEvaluator:
             cmd.extend(["--jobs-dir", payload.jobs_dir])
         if job_name:
             cmd.extend(["--job-name", job_name])
+
+        task_ids = [str(item) for item in (payload.task_ids or []) if item]
+        if task_ids:
+            for task_name in task_ids:
+                cmd.extend(["--task-name", task_name])
+        elif payload.n_tasks is not None:
+            raise ValueError("n_tasks is only supported for runner=tb.")
+        
         return cmd
 
     def _build_tb_command(self, payload: EvalRequestPayload, run_id: str) -> list[str]:
@@ -377,6 +382,14 @@ class TerminalBenchEvaluator:
             cmd.extend(["--dataset-path", payload.dataset_path])
         if payload.n_attempts is not None:
             cmd.extend(["--n-attempts", str(payload.n_attempts)])
+        
+        task_ids = [str(item) for item in (payload.task_ids or []) if item]
+        if task_ids:
+            for task_id in task_ids:
+                cmd.extend(["--task-id", task_id])
+        elif payload.n_tasks is not None:
+            cmd.extend(["--n-tasks", str(payload.n_tasks)])
+
         return cmd
 
     def _build_env(self) -> dict[str, str]:

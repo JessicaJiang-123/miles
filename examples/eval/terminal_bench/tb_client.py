@@ -69,7 +69,9 @@ class TerminalBenchClient(EvalClient):
         elif self._config.runner == "harbor":
             payload.update(self._payload_harbor())
         else:
-            raise ValueError(f"Unsupported runner: {self._config.runner}")
+            raise ValueError(
+                f"Invalid runner: {self._config.runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+            )
         return payload
     
     def _base_payload(self) -> dict[str, Any]:
