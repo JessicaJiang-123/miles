@@ -40,19 +40,36 @@ class TerminalBenchClient(EvalClient):
         return metrics, response
 
     def _build_payload(self, args, rollout_id: int) -> dict[str, Any]:
+        payload = self._base_payload()
+        runner = self._config.runner
+        if runner not in {"tb", "harbor"}:
+            raise ValueError(
+                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+            )
+        if runner == "tb":
+            payload.update(self._payload_tb())
+        return payload
+    
+    def _base_payload(self) -> dict[str, Any]:
         payload = {
             "model_name": self._config.model_name,
+            "agent_name": self._config.agent_name,
+            "dataset_name": self._config.dataset_name,
+            "dataset_version": self._config.dataset_version,
             "api_base": self._config.api_base,
-            "n_tasks": self._config.n_tasks,
             "n_concurrent": self._config.n_concurrent,
             "metric_prefix": self._config.name,
+            "runner": self._config.runner,
+            "output_path": self._config.output_path,
         }
-        if self._config.dataset_path:
-            payload["dataset_path"] = self._config.dataset_path
         if self._config.task_ids:
             payload["task_ids"] = list(self._config.task_ids)
-        if self._config.n_attempts is not None:
-            payload["n_attempts"] = self._config.n_attempts
+        return payload
+    
+    def _payload_tb(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self._config.n_tasks is not None:
+            payload["n_tasks"] = self._config.n_tasks
         return payload
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:

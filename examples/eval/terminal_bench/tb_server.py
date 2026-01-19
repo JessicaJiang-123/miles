@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 """
-Simple HTTP server that proxies Miles evaluation requests to the `tb run`
-command shipped with Terminal Bench.
+Simple HTTP server that proxies Miles evaluation requests to `tb run` (1.0)
+or `harbor run` (2.0), depending on the request payload.
 
 Usage:
     python examples/eval/terminal_bench/tb_server.py \
-        --host 0.0.0.0 --port 9050 \
-        --output-root /opt/tb-eval
+        --host 0.0.0.0 --port 9050
 
 Miles (or Miles-compatible runners) should POST the payload described in
 `EvalRequestPayload` to http://<host>:<port>/evaluate. The server blocks until
-`tb run` finishes, then returns aggregated metrics along with paths to the
+the run finishes, then returns aggregated metrics along with paths to the
 generated artifacts (logs + raw metrics).
 """
 
 from __future__ import annotations
 
 import argparse
+import cmd
 import json
 import logging
 import os
@@ -51,14 +51,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 @dataclass
 class EvalRequestPayload:
     model_name: str = ""
+    agent_name: str | None = None
     api_base: str = ""
+    runner: str | None = None
+    dataset_name: str | None = None
+    dataset_version: str | None = None
     n_tasks: int | None = None
     n_concurrent: int | None = None
-    dataset_path: str | None = None
     task_ids: list[str] | None = None
-    n_attempts: int | None = None
     metric_prefix: str | None = None
-
+    output_path: str | None = None
 
 @dataclass
 class JobRecord:
@@ -106,6 +108,15 @@ def _normalize_model_name(model_name: str) -> str:
         return name
     return f"openai/{name}"
 
+def _normalize_runner(runner: str | None) -> str:
+    value = (runner or "").strip().lower()
+    if not value:
+        return "harbor"
+    if value in {"tb", "harbor"}:
+        return value
+    raise ValueError(
+        f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+    )
 
 @dataclass
 class ServerConfig:
@@ -134,9 +145,19 @@ class TerminalBenchEvaluator:
 
         job_id = uuid.uuid4().hex
         run_id = f"{int(time.time())}-{job_id[:8]}"
-        run_dir = self._config.output_root / run_id
+        runner = _normalize_runner(payload.runner)
+        job_name = None
+        if runner == "harbor":
+            jobs_dir = Path(payload.output_path or "jobs").expanduser()
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            job_name = run_id
+            run_dir = jobs_dir / job_name
+        else:
+            tb_root = Path(payload.output_path or self._config.output_root).expanduser()
+            tb_root.mkdir(parents=True, exist_ok=True)
+            run_dir = tb_root / run_id
 
-        command = self._build_command(payload, run_id)
+        command = self._build_command(payload, run_id, runner, job_name)
         command_str = " ".join(shlex.quote(part) for part in command)
         log_path = self._log_root / f"{run_id}.log"
 
@@ -153,7 +174,7 @@ class TerminalBenchEvaluator:
 
         thread = threading.Thread(
             target=self._run_job,
-            args=(job_id, payload, run_dir, command, log_path),
+            args=(job_id, payload, run_dir, command, log_path, runner),
             daemon=True,
         )
         thread.start()
@@ -175,6 +196,7 @@ class TerminalBenchEvaluator:
         run_dir: Path,
         command: list[str],
         log_path: Path,
+        runner: str,
     ) -> None:
         with self._jobs_lock:
             record = self._jobs.get(job_id)
@@ -188,7 +210,7 @@ class TerminalBenchEvaluator:
         try:
             with self._lock:
                 self._run_command(command, env=env, log_path=log_path)
-            metrics = self._collect_metrics(run_dir)
+            metrics = self._collect_metrics(run_dir, runner, payload)
             if payload.metric_prefix:
                 metrics = {payload.metric_prefix: metrics}
             with self._jobs_lock:
@@ -214,50 +236,80 @@ class TerminalBenchEvaluator:
                 return None
             return record.to_dict()
 
-    def _build_command(self, payload: EvalRequestPayload, run_id: str) -> list[str]:
-        # 1. Normalize model name (add openai/ prefix)
+    def _build_command(
+        self,
+        payload: EvalRequestPayload,
+        run_id: str,
+        runner: str,
+        job_name: str | None,
+    ) -> list[str]:
+        if runner == "harbor":
+            cmd = self._build_harbor_command(payload, job_name)
+        elif runner == "tb":
+            cmd = self._build_tb_command(payload, run_id)
+        else:
+            raise ValueError(
+                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+            )
+
         model_name = _normalize_model_name(payload.model_name)
-
-        cmd = [
-            "tb",
-            "run",
-            "-a",
-            "terminus-2",  # Added Agent flag
-            "--output-path",
-            str(self._config.output_root),
-            "--run-id",
-            run_id,
-        ]
-
-        # 2. Add model
         if model_name:
             cmd.extend(["--model", model_name])
 
-        # 3. Add Agent kwargs (Use api_base exactly like the CLI command)
+        agent_name = (payload.agent_name or "terminus-2").strip()
+        if agent_name:
+            cmd.extend(["--agent", agent_name])
+
         if payload.api_base:
             cmd.extend(["--agent-kwarg", f"api_base={payload.api_base}"])
 
-        if payload.dataset_path:
-            cmd.extend(["--dataset-path", payload.dataset_path])
+        n_concurrent = payload.n_concurrent if payload.n_concurrent is not None else 1
+        cmd.extend(["--n-concurrent", str(n_concurrent)])
 
-        if payload.n_attempts is not None:
-            cmd.extend(["--n-attempts", str(payload.n_attempts)])
+        return cmd
 
-        # 4. Add n_tasks if present
-        task_ids = []
-        if payload.task_ids:
-            task_ids.extend([str(item) for item in payload.task_ids if item])
+    def _build_harbor_command(self, payload: EvalRequestPayload, job_name: str | None) -> list[str]:
+        dataset_name = (payload.dataset_name or "terminal-bench").strip() or "terminal-bench"
+        dataset_version = (payload.dataset_version or "2.0").strip() or "2.0"
+        cmd = [
+            "harbor",
+            "run",
+            "-d",
+            f"{dataset_name}@{dataset_version}",
+        ]
+        jobs_dir = payload.output_path
+        if jobs_dir:
+            cmd.extend(["--jobs-dir", jobs_dir])
+        if job_name:
+            cmd.extend(["--job-name", job_name])
+
+        task_ids = [str(item) for item in (payload.task_ids or []) if item]
+        if task_ids:
+            for task_name in task_ids:
+                cmd.extend(["--task-name", task_name])
+        elif payload.n_tasks is not None:
+            raise ValueError("n_tasks is only supported for runner=tb.")
+        
+        return cmd
+
+    def _build_tb_command(self, payload: EvalRequestPayload, run_id: str) -> list[str]:
+        dataset_name = (payload.dataset_name or "terminal-bench-core").strip() or "terminal-bench-core"
+        dataset_version = (payload.dataset_version or "0.1.1").strip() or "0.1.1"
+        cmd = [
+            "tb",
+            "run",
+            "-d",
+            f"{dataset_name}=={dataset_version}",
+        ]
+        output_root = str(Path(payload.output_path or self._config.output_root).expanduser())
+        cmd.extend(["--output-path", output_root, "--run-id", run_id])
+        
+        task_ids = [str(item) for item in (payload.task_ids or []) if item]
         if task_ids:
             for task_id in task_ids:
                 cmd.extend(["--task-id", task_id])
         elif payload.n_tasks is not None:
             cmd.extend(["--n-tasks", str(payload.n_tasks)])
-
-        # 5. Add concurrency
-        n_concurrent = payload.n_concurrent
-        if n_concurrent is None:
-            n_concurrent = 1
-        cmd.extend(["--n-concurrent", str(n_concurrent)])
 
         return cmd
 
@@ -288,16 +340,33 @@ class TerminalBenchEvaluator:
         if retcode != 0:
             with open(log_path, encoding="utf-8", errors="ignore") as log_file:
                 tail = "".join(log_file.readlines()[-200:])
-            raise RuntimeError(f"`tb run` failed with exit code {retcode}. See {log_path}\n{tail}")
+            raise RuntimeError(f"Command failed with exit code {retcode}. See {log_path}\n{tail}")
 
     @staticmethod
-    def _collect_metrics(run_dir: Path) -> dict[str, Any]:
-        metrics_path = run_dir / "results.json"
-        if not metrics_path.exists():
-            logger.warning("Results file missing at %s", metrics_path)
-            return {}
-
-        metrics = TerminalBenchEvaluator._extract_metrics(metrics_path)
+    def _collect_metrics(run_dir: Path, runner: str, payload: EvalRequestPayload) -> dict[str, Any]:
+        if runner == "harbor":
+            metrics_path = run_dir / "result.json"
+            if not metrics_path.exists():
+                fallback = TerminalBenchEvaluator._find_latest_result(
+                    Path(payload.output_path or "jobs").expanduser()
+                )
+                if fallback is not None:
+                    metrics_path = fallback
+            if not metrics_path.exists():
+                logger.warning("Results file missing at %s", metrics_path)
+                return {}
+            metrics = TerminalBenchEvaluator._extract_harbor_metrics(
+                metrics_path,
+                model_name=_normalize_model_name(payload.model_name),
+                dataset_name=(payload.dataset_name or "terminal-bench"),
+                agent_name=(payload.agent_name or "terminus-2"),
+            )
+        else:
+            metrics_path = run_dir / "results.json"
+            if not metrics_path.exists():
+                logger.warning("Results file missing at %s", metrics_path)
+                return {}
+            metrics = TerminalBenchEvaluator._extract_metrics(metrics_path)
         if not metrics:
             logger.warning("No accuracy/n_resolved metrics found in %s", metrics_path)
         return metrics
@@ -356,6 +425,121 @@ class TerminalBenchEvaluator:
 
         return metrics
 
+    @staticmethod
+    def _find_latest_result(jobs_dir: Path) -> Path | None:
+        if not jobs_dir.exists():
+            return None
+        candidates = list(jobs_dir.glob("**/result.json"))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+
+    @staticmethod
+    def _extract_harbor_metrics(
+        metrics_path: Path,
+        *,
+        model_name: str,
+        dataset_name: str,
+        agent_name: str,
+    ) -> dict[str, Any]:
+        try:
+            with open(metrics_path, encoding="utf-8") as fp:
+                metrics_data = json.load(fp)
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to parse %s: %s", metrics_path, exc)
+            return {}
+
+        metrics: dict[str, Any] = {}
+        stats = metrics_data.get("stats")
+        if isinstance(stats, dict):
+            evals = stats.get("evals")
+        else:
+            evals = None
+
+        accuracy = None
+        if isinstance(evals, dict):
+            candidates = [
+                f"{agent_name}__{model_name}__{dataset_name}",
+                f"{agent_name}__{model_name}__terminal-bench",
+            ]
+            for key in candidates:
+                entry = evals.get(key)
+                accuracy = TerminalBenchEvaluator._extract_harbor_accuracy(entry)
+                if accuracy is not None:
+                    break
+            if accuracy is None:
+                for entry in evals.values():
+                    accuracy = TerminalBenchEvaluator._extract_harbor_accuracy(entry)
+                    if accuracy is not None:
+                        break
+
+        if isinstance(accuracy, (int, float)):
+            metrics["accuracy"] = float(accuracy)
+            metrics["pass_at_k/1"] = float(accuracy)
+
+        reward_stats = metrics_data.get("reward_stats")
+        if isinstance(reward_stats, dict):
+            reward_counts = reward_stats.get("reward")
+        else:
+            reward_counts = None
+
+        if isinstance(reward_counts, dict):
+            resolved = TerminalBenchEvaluator._extract_reward_count(reward_counts, 1.0)
+            unresolved = TerminalBenchEvaluator._extract_reward_count(reward_counts, 0.0)
+            if resolved is not None:
+                metrics["n_resolved"] = resolved
+            if unresolved is not None:
+                metrics["n_unresolved"] = unresolved
+
+        results = metrics_data.get("results")
+        if isinstance(results, list):
+            input_tokens = [
+                r.get("total_input_tokens")
+                for r in results
+                if isinstance(r, dict) and isinstance(r.get("total_input_tokens"), (int, float))
+            ]
+            output_tokens = [
+                r.get("total_output_tokens")
+                for r in results
+                if isinstance(r, dict) and isinstance(r.get("total_output_tokens"), (int, float))
+            ]
+
+            if input_tokens:
+                metrics["total_input_tokens_mean"] = float(statistics.mean(input_tokens))
+                metrics["total_input_tokens_median"] = float(statistics.median(input_tokens))
+            if output_tokens:
+                metrics["total_output_tokens_mean"] = float(statistics.mean(output_tokens))
+                metrics["total_output_tokens_median"] = float(statistics.median(output_tokens))
+
+        return metrics
+
+    @staticmethod
+    def _extract_harbor_accuracy(entry: Any) -> float | None:
+        if not isinstance(entry, dict):
+            return None
+        metrics_block = entry.get("metrics")
+        if isinstance(metrics_block, list) and metrics_block:
+            first_metric = metrics_block[0]
+            if isinstance(first_metric, dict):
+                mean = first_metric.get("mean")
+                if isinstance(mean, (int, float)):
+                    return float(mean)
+        mean = entry.get("mean")
+        if isinstance(mean, (int, float)):
+            return float(mean)
+        return None
+
+    @staticmethod
+    def _extract_reward_count(reward_counts: dict[Any, Any], reward_value: float) -> int | None:
+        for key, value in reward_counts.items():
+            try:
+                key_value = float(key)
+            except (TypeError, ValueError):
+                continue
+            if key_value == reward_value and isinstance(value, (int, float)):
+                return int(value)
+        return None
+
 
 # ---------------------------------------------------------------------------
 # HTTP server
@@ -410,7 +594,7 @@ def parse_args() -> argparse.Namespace:
         "--output-root",
         type=str,
         default="./terminal-bench-output",
-        help="Directory to store `tb run` outputs.",
+        help="Directory to store `tb run` outputs (Terminal Bench 1.0).",
     )
     return parser.parse_args()
 

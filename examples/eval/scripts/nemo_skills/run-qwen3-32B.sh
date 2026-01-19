@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Example launcher that reuses the Qwen3-8B recipe but delegates evaluation to an
-# external Terminal Bench server via the eval_delegate_rollout wrapper.
+# Example launcher that reuses the Qwen3-4B recipe but delegates evaluation to an
+# external Nemo Skills server via the eval_delegate_rollout wrapper.
 
 # Clean up any stale processes from a previous run.
 pkill -9 sglang
@@ -15,11 +15,10 @@ pkill -9 python
 
 set -ex
 
-export PYTHONBUFFERED=16
-export MILES_HOST_IP=${MILES_HOST_IP:-"127.0.0.1"}
+SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"miles-openai-model"}
 
-MODEL_DIR="${MODEL_DIR:-/root/.cache}"
-export MODEL_DIR
+
+export PYTHONBUFFERED=16
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -30,17 +29,17 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
-source "${REPO_ROOT}/scripts/models/qwen3-8B.sh"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." &>/dev/null && pwd)"
+source "${REPO_ROOT}/scripts/models/qwen3-32B.sh"
 
 # Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/eval_tb_example.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/nemo_skills/multi_tasks.yaml"}
 
 CKPT_ARGS=(
-   --hf-checkpoint ${MODEL_DIR}/OpenThinker-Agent-v1 # huggingface-cli download open-thoughts/OpenThinker-Agent-v1
-   --ref-load ${MODEL_DIR}/OpenThinker-Agent-v1_torch_dist
-   # --load ${MODEL_DIR}/OpenThinker-Agent-v1_miles/
-   --save ${MODEL_DIR}/OpenThinker-Agent-v1_miles/
+   --hf-checkpoint /root/shared/Qwen3-32B
+   --ref-load /root/shared/Qwen3-32B_torch_dist
+   --load /root/shared/Qwen3-32B_miles/
+   --save /root/shared/Qwen3-32B_miles/
    --save-interval 20
 )
 
@@ -55,7 +54,8 @@ ROLLOUT_ARGS=(
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
-   --rollout-temperature 0.8
+   --rollout-temperature 1
+
    --global-batch-size 256
    --balance-data
 )
@@ -67,7 +67,8 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 1
+   --tensor-model-parallel-size 8
+   --sequence-parallel
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
@@ -89,6 +90,10 @@ GRPO_ARGS=(
    --entropy-coef 0.00
    --eps-clip 0.2
    --eps-clip-high 0.28
+
+   --optimizer-cpu-offload
+   --overlap-cpu-optimizer-d2h-h2d
+   --use-precision-aware-optimizer
 )
 
 OPTIMIZER_ARGS=(
@@ -103,14 +108,14 @@ OPTIMIZER_ARGS=(
 WANDB_ARGS=(
    --use-wandb
    --wandb-project miles-eval
-   --wandb-group qwen3-8b-eval
-   --wandb-key ${WANDB_KEY}   # export WANDB_KEY="your_key"
+   --wandb-group qwen3-32b-eval
+   --wandb-key ${WANDB_KEY}
 )
 
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
+   --rollout-num-gpus-per-engine 8
    --sglang-mem-fraction-static 0.7
-   --sglang-router-port 30005
+   # --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
 )
 
 MISC_ARGS=(
@@ -122,16 +127,7 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=0,1
-
-ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 2 \
-            --disable-usage-stats \
-            --dashboard-host=0.0.0.0 \
-            --dashboard-port=8266 \
-            --dashboard-agent-listen-port 52366 \
-            --dashboard-agent-grpc-port 52367 \
-            --runtime-env-agent-port 52368
-
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -140,12 +136,11 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-ray job submit --address="http://${MASTER_ADDR}:8266" \
-   --working-dir "${REPO_ROOT}" \
+ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

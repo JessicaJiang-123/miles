@@ -12,11 +12,14 @@ class TerminalBenchConfig(EvalEnvConfig):
     """Environment configuration shared by the Terminal Bench client/server."""
 
     model_name: str = "qwen3-8b"
+    agent_name: str = "terminus-2"
     api_base: str = "http://127.0.1.1:30001/v1"
-    dataset_path: str | None = None
+    runner: str = "harbor"
+    dataset_name: str = ""
+    dataset_version: str = ""
+    output_path: str | None = None
     n_tasks: int | None = None
     task_ids: list[str] = field(default_factory=list)
-    n_attempts: int | None = None
     n_concurrent: int = 8
 
     @classmethod
@@ -27,17 +30,40 @@ class TerminalBenchConfig(EvalEnvConfig):
 
         field_casts = {
             "model_name": str,
+            "agent_name": str,
             "api_base": str,
-            "n_attempts": int,
+            "runner": str,
+            "dataset_name": lambda v: str(v).strip(),
+            "dataset_version": lambda v: str(v).strip(),
+            "output_path": lambda v: str(v).strip(),
             "n_tasks": int,
             "n_concurrent": int,
-            "dataset_path": str,
         }
 
         for key, caster in field_casts.items():
             value = clean_raw.get(key)
             if value is not None:
                 setattr(base_cfg, key, caster(value))
+
+        runner = (base_cfg.runner or "").strip().lower()
+        if not runner:
+            runner = "harbor"
+        elif runner not in {"tb", "harbor"}:
+            raise ValueError(
+                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
+            )
+        base_cfg.runner = runner
+        # runner-specific defaults
+        if runner == "tb":
+            if not base_cfg.dataset_name:
+                base_cfg.dataset_name = "terminal-bench-core"
+            if not base_cfg.dataset_version:
+                base_cfg.dataset_version = "0.1.1"
+        else:
+            if not base_cfg.dataset_name:
+                base_cfg.dataset_name = "terminal-bench"
+            if not base_cfg.dataset_version:
+                base_cfg.dataset_version = "2.0"
 
         task_ids = clean_raw.get("task_ids")
         if isinstance(task_ids, (list, tuple)):

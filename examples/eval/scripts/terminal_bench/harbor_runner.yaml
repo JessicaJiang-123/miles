@@ -20,10 +20,12 @@ eval:
       timeout_secs: 86400  # 24 hours
       max_retries: 1 # HTTP request retries from Miles to the TB server
       model_name: qwen3-8b
+      agent_name: terminus-2
       api_base: http://127.0.0.1:30005/v1 # Port must match the sglang router port set in run-eval-tb-qwen.sh
-      dataset_path: /mnt/data/xinyu/program/miles-tb/terminal-bench/tasks # Dataset path on the host machine
-      # task_ids: 
-      #   - hello-world
-      # n_tasks: 10
-      n_attempts: 1 # TB task-level retries (per task within tb run)
+      runner: harbor
+      dataset_name: terminal-bench
+      dataset_version: "2.0"
+      output_path: harbor_runner_jobs
+      # task_ids:
+      #   - fix-git
       n_concurrent: 8

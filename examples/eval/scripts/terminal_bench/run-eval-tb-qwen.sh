@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Example launcher that reuses the Qwen3-4B recipe but delegates evaluation to an
-# external Nemo Skills server via the eval_delegate_rollout wrapper.
+# Example launcher that reuses the Qwen3-8B recipe but delegates evaluation to an
+# external Terminal Bench server via the eval_delegate_rollout wrapper.
 
 # Clean up any stale processes from a previous run.
 pkill -9 sglang
@@ -15,10 +15,11 @@ pkill -9 python
 
 set -ex
 
-SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"miles-openai-model"}
-
-
 export PYTHONBUFFERED=16
+export MILES_HOST_IP=${MILES_HOST_IP:-"127.0.0.1"}
+
+MODEL_DIR="${MODEL_DIR:-/root/.cache/huggingface}"
+export MODEL_DIR
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -29,17 +30,17 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
-source "${REPO_ROOT}/scripts/models/qwen3-4B.sh"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." &>/dev/null && pwd)"
+source "${REPO_ROOT}/scripts/models/qwen3-8B.sh"
 
-# Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/multi_tasks.yaml"}
+# EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/harbor_runner.yaml"}
+EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/tb_runner.yaml"}
 
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B
-   --ref-load /root/Qwen3-4B_torch_dist
-   --load /root/Qwen3-4B_miles/
-   --save /root/Qwen3-4B_miles/
+   --hf-checkpoint ${MODEL_DIR}/OpenThinker-Agent-v1 # huggingface-cli download open-thoughts/OpenThinker-Agent-v1
+   --ref-load ${MODEL_DIR}/OpenThinker-Agent-v1_torch_dist
+   # --load ${MODEL_DIR}/OpenThinker-Agent-v1_miles/
+   --save ${MODEL_DIR}/OpenThinker-Agent-v1_miles/
    --save-interval 20
 )
 
@@ -50,25 +51,24 @@ ROLLOUT_ARGS=(
    --apply-chat-template
    --rollout-shuffle
    --rm-type deepscaler
-   --num-rollout 3000
+   # --num-rollout 3000
+   --num-rollout 1
    --rollout-batch-size 32
    --n-samples-per-prompt 8
    --rollout-max-response-len 8192
    --rollout-temperature 1
-
    --global-batch-size 256
    --balance-data
 )
 
 EVAL_ARGS=(
-   --eval-interval 5
+   --eval-interval 1
    --eval-config "${EVAL_CONFIG_PATH}"
    --eval-function-path examples.eval.eval_delegate_rollout.generate_rollout
 )
 
 PERF_ARGS=(
-   --tensor-model-parallel-size 2
-   --sequence-parallel
+   --tensor-model-parallel-size 1
    --pipeline-model-parallel-size 1
    --context-parallel-size 1
    --expert-model-parallel-size 1
@@ -103,14 +103,15 @@ OPTIMIZER_ARGS=(
 
 WANDB_ARGS=(
    --use-wandb
-   --wandb-project miles-eval
-   --wandb-group qwen3-4b-eval
-   --wandb-key ${WANDB_KEY}
+   --wandb-project miles-tb
+   --wandb-group qwen3-8b-eval
+   --wandb-key ${WANDB_KEY}   # export WANDB_KEY="your_key"
 )
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 1
    --sglang-mem-fraction-static 0.7
+   --sglang-router-port 30005
 )
 
 MISC_ARGS=(
@@ -122,10 +123,26 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-# export CUDA_VISIBLE_DEVICES=0,1
-# Set Up Your GPUs for Training
+export CUDA_VISIBLE_DEVICES=6,7
+# export CUDA_VISIBLE_DEVICES=4,5,6,7
+# export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 2 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+# ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 2 \
+#             --disable-usage-stats \
+#             --dashboard-host=0.0.0.0 \
+#             --dashboard-port=8266 \
+#             --dashboard-agent-listen-port 52366 \
+#             --dashboard-agent-grpc-port 52367 \
+#             --runtime-env-agent-port 52368
+
+ray start --head --node-ip-address ${MASTER_ADDR} --port 6381 --num-gpus 2 \
+            --disable-usage-stats \
+            --dashboard-host=0.0.0.0 \
+            --dashboard-port=8267 \
+            --dashboard-agent-listen-port 52266 \
+            --dashboard-agent-grpc-port 52267 \
+            --runtime-env-agent-port 52268
+
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -134,7 +151,8 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-ray job submit --address="http://127.0.0.1:8265" \
+ray job submit --address="http://${MASTER_ADDR}:8267" \
+   --working-dir "${REPO_ROOT}" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
