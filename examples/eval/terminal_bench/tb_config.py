@@ -15,8 +15,8 @@ class TerminalBenchConfig(EvalEnvConfig):
     agent_name: str = "terminus-2"
     api_base: str = "http://127.0.1.1:30001/v1"
     runner: str = "harbor"
-    dataset_name: str = "terminal-bench"
-    dataset_version: str = "2.0"
+    dataset_name: str = ""
+    dataset_version: str = ""
     output_path: str | None = None
     n_tasks: int | None = None
     task_ids: list[str] = field(default_factory=list)

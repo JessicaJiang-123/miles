@@ -55,6 +55,8 @@ class TerminalBenchClient(EvalClient):
         payload = {
             "model_name": self._config.model_name,
             "agent_name": self._config.agent_name,
+            "dataset_name": self._config.dataset_name,
+            "dataset_version": self._config.dataset_version,
             "api_base": self._config.api_base,
             "n_concurrent": self._config.n_concurrent,
             "metric_prefix": self._config.name,
@@ -70,12 +72,6 @@ class TerminalBenchClient(EvalClient):
         if self._config.n_tasks is not None:
             payload["n_tasks"] = self._config.n_tasks
         return payload
-
-    def _payload_harbor(self) -> dict[str, Any]:
-        return {
-            "dataset_name": self._config.dataset_name,
-            "dataset_version": self._config.dataset_version,
-        }
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         last_error: Exception | None = None

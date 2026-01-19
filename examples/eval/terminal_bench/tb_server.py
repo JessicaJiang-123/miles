@@ -59,7 +59,6 @@ class EvalRequestPayload:
     dataset_version: str | None = None
     n_tasks: int | None = None
     n_concurrent: int | None = None
-    dataset_path: str | None = None
     task_ids: list[str] | None = None
     metric_prefix: str | None = None
     output_path: str | None = None
@@ -148,7 +147,6 @@ class TerminalBenchEvaluator:
         job_id = uuid.uuid4().hex
         run_id = f"{int(time.time())}-{job_id[:8]}"
         runner = _normalize_runner(payload.runner)
-        job_name = payload.job_name
         if runner == "harbor":
             jobs_dir = Path(payload.output_path or "jobs").expanduser()
             jobs_dir.mkdir(parents=True, exist_ok=True)
