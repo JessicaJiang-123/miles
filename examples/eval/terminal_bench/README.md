@@ -12,10 +12,9 @@ This folder wires Terminal Bench (TB) into Miles as an eval delegate. The run ha
 ## 1) Get the code (host)
 
 ```bash
-mkdir miles-tb
-cd miles-tb
+mkdir miles-harbor
+cd miles-harbor
 git clone https://github.com/radixark/miles.git
-git clone https://github.com/laude-institute/terminal-bench
 ```
 
 ## 2) Launch the Miles container
@@ -31,8 +30,8 @@ docker run \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   --ulimit nofile=65536:65536 \
-  -v /mnt/data/.cache:/root/.cache \
-  -v $(pwd):/shared/miles-tb \
+  -v /data/cache:/root/.cache \
+  -v $(pwd):/shared/miles-harbor \
   --name <miles container name> \
   radixark/miles:latest \
   /bin/bash
@@ -58,7 +57,8 @@ uv pip install -r miles/examples/eval/terminal_bench/requirements.txt
 Terminal Bench 2.0 (default, via harbor):
 
 ```bash
-uv tool install harbor
+# uv tool install harbor
+uv pip install harbor
 ```
 
 Terminal Bench 1.0 (legacy, via tb CLI):
@@ -100,21 +100,21 @@ Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
 huggingface-cli download open-thoughts/OpenThinker-Agent-v1 \
---local-dir /root/.cache/OpenThinker-Agent-v1
+--local-dir /root/.cache/huggingface/OpenThinker-Agent-v1
 ```
 
 After downloading, convert the HuggingFace checkpoint to Miles's torch distributed format. From the Miles root directory, run:
 
 ```bash
-cd /shared/miles-tb/miles
+cd /shared/miles-harbor/miles
 source scripts/models/qwen3-8B.sh
 
-export PYTHONPATH=/root/Megatron-LM:/shared/miles-tb/miles
+export PYTHONPATH=/root/Megatron-LM:/shared/miles-harbor/miles
 
 python tools/convert_hf_to_torch_dist.py \
   ${MODEL_ARGS[@]} \
-  --hf-checkpoint /root/.cache/OpenThinker-Agent-v1 \
-  --save /root/.cache/OpenThinker-Agent-v1_torch_dist
+  --hf-checkpoint /root/.cache/huggingface/OpenThinker-Agent-v1 \
+  --save /root/.cache/huggingface/OpenThinker-Agent-v1_torch_dist
 ```
 
 Finally, run the following command inside the Miles container:
