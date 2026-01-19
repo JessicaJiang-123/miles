@@ -35,7 +35,7 @@ class TerminalBenchConfig(EvalEnvConfig):
             "runner": str,
             "dataset_name": lambda v: str(v).strip(),
             "dataset_version": lambda v: str(v).strip(),
-            "output_path": str,
+            "output_path": lambda v: str(v).strip(),
             "n_tasks": int,
             "n_concurrent": int,
         }
