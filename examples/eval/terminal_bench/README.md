@@ -121,7 +121,7 @@ python tools/convert_hf_to_torch_dist.py \
 Finally, run the following command inside the Miles container:
 
 ```bash
-bash miles/examples/eval/scripts/run-eval-tb-qwen.sh 2>&1 | tee run.log
+bash miles/examples/eval/scripts/terminal_bench/run-eval-tb-qwen.sh 2>&1 | tee run.log
 ```
 
 For convenience, you can restrict the evaluation scope in `eval_tb_example.yaml`, either by specifying a single task or multiple tasks (`task_ids`), or by limiting the number of tasks via `n_tasks`.

@@ -25,10 +25,7 @@ eval:
       dataset_name: terminal-bench
       dataset_version: "2.0"
       jobs_dir: jobs
-      # job_name: qwen3-8b-tb2
-      # dataset_path: /mnt/data/xinyu/program/miles-tb/terminal-bench/tasks # TB 1.0 only
-      # task_ids: 
-      #   - hello-world
-      # n_tasks: 10
-      # n_attempts: 1 # TB 1.0 only (per task within tb run)
+      job_name: qwen3-8b-tb-eval-191217
+      task_ids:
+        - adaptive-rejection-sampler
       n_concurrent: 8
