@@ -61,7 +61,6 @@ class EvalRequestPayload:
     n_concurrent: int | None = None
     dataset_path: str | None = None
     task_ids: list[str] | None = None
-    n_attempts: int | None = None
     metric_prefix: str | None = None
     output_path: str | None = None
 
@@ -303,9 +302,6 @@ class TerminalBenchEvaluator:
         ]
         output_root = str(Path(payload.output_path or self._config.output_root).expanduser())
         cmd.extend(["--output-path", output_root, "--run-id", run_id])
-
-        if payload.n_attempts is not None:
-            cmd.extend(["--n-attempts", str(payload.n_attempts)])
         
         task_ids = [str(item) for item in (payload.task_ids or []) if item]
         if task_ids:

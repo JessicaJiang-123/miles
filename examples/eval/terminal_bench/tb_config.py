@@ -20,7 +20,6 @@ class TerminalBenchConfig(EvalEnvConfig):
     output_path: str | None = None
     n_tasks: int | None = None
     task_ids: list[str] = field(default_factory=list)
-    n_attempts: int | None = None
     n_concurrent: int = 8
 
     @classmethod
@@ -37,7 +36,6 @@ class TerminalBenchConfig(EvalEnvConfig):
             "dataset_name": str,
             "dataset_version": str,
             "output_path": str,
-            "n_attempts": int,
             "n_tasks": int,
             "n_concurrent": int,
         }

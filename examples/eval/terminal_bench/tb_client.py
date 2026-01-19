@@ -63,8 +63,6 @@ class TerminalBenchClient(EvalClient):
         }
         if self._config.task_ids:
             payload["task_ids"] = list(self._config.task_ids)
-        if self._config.n_attempts is not None:
-            payload["n_attempts"] = self._config.n_attempts
         return payload
     
     def _payload_tb(self) -> dict[str, Any]:
