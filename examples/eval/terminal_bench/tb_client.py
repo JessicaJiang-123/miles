@@ -55,7 +55,6 @@ class TerminalBenchClient(EvalClient):
         payload = {
             "model_name": self._config.model_name,
             "api_base": self._config.api_base,
-            "n_tasks": self._config.n_tasks,
             "n_concurrent": self._config.n_concurrent,
             "metric_prefix": self._config.name,
             "runner": self._config.runner,
@@ -68,8 +67,8 @@ class TerminalBenchClient(EvalClient):
     
     def _payload_tb(self) -> dict[str, Any]:
         payload: dict[str, Any] = {}
-        if self._config.dataset_path:
-            payload["dataset_path"] = self._config.dataset_path
+        if self._config.n_tasks is not None:
+            payload["n_tasks"] = self._config.n_tasks
         return payload
 
     def _payload_harbor(self) -> dict[str, Any]:

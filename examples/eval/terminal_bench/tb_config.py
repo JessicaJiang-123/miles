@@ -18,7 +18,6 @@ class TerminalBenchConfig(EvalEnvConfig):
     dataset_version: str = "2.0"
     jobs_dir: str | None = "jobs"
     job_name: str | None = None
-    dataset_path: str | None = None
     n_tasks: int | None = None
     task_ids: list[str] = field(default_factory=list)
     n_attempts: int | None = None
@@ -41,7 +40,6 @@ class TerminalBenchConfig(EvalEnvConfig):
             "n_attempts": int,
             "n_tasks": int,
             "n_concurrent": int,
-            "dataset_path": str,
         }
 
         for key, caster in field_casts.items():
@@ -57,6 +55,17 @@ class TerminalBenchConfig(EvalEnvConfig):
                 f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
             )
         base_cfg.runner = runner
+        # runner-specific defaults
+        if runner == "tb":
+            if not base_cfg.dataset_name:
+                base_cfg.dataset_name = "terminal-bench-core"
+            if not base_cfg.dataset_version:
+                base_cfg.dataset_version = "0.1.1"
+        else:
+            if not base_cfg.dataset_name:
+                base_cfg.dataset_name = "terminal-bench"
+            if not base_cfg.dataset_version:
+                base_cfg.dataset_version = "2.0"
 
         task_ids = clean_raw.get("task_ids")
         if isinstance(task_ids, (list, tuple)):

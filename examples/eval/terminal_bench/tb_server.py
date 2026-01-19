@@ -292,9 +292,13 @@ class TerminalBenchEvaluator:
         return cmd
 
     def _build_tb_command(self, payload: EvalRequestPayload, run_id: str) -> list[str]:
+        dataset_name = (payload.dataset_name or "terminal-bench-core").strip() or "terminal-bench-core"
+        dataset_version = (payload.dataset_version or "0.1.1").strip() or "0.1.1"
         cmd = [
             "tb",
             "run",
+            "-d",
+            f"{dataset_name}=={dataset_version}",
             "-a",
             "terminus-2",
             "--output-path",
@@ -302,8 +306,6 @@ class TerminalBenchEvaluator:
             "--run-id",
             run_id,
         ]
-        if payload.dataset_path:
-            cmd.extend(["--dataset-path", payload.dataset_path])
         if payload.n_attempts is not None:
             cmd.extend(["--n-attempts", str(payload.n_attempts)])
         
