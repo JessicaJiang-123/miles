@@ -26,9 +26,9 @@ eval:
       dataset_name: terminal-bench-core
       dataset_version: "0.1.1"
       output_path: tb_runner_jobs
-      n_concurrent: 1
-      runner_kwargs:
-        task_id:
-          - hello-world
+      n_concurrent: 16
+      # runner_kwargs:
+        # task_id:
+        #   - hello-world
         # n_tasks: 10
         # example_flag: value

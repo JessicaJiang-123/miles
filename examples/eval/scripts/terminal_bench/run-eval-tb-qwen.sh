@@ -33,8 +33,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3-8B.sh"
 
-EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/harbor_runner.yaml"}
-# EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/tb_runner.yaml"}
+# EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/harbor_runner.yaml"}
+EVAL_CONFIG_PATH=${TB_EVAL_CONFIG_PATH:-"${SCRIPT_DIR}/tb_runner.yaml"}
 
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_DIR}/OpenThinker-Agent-v1 # huggingface-cli download open-thoughts/OpenThinker-Agent-v1
@@ -123,7 +123,7 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3"}
+export CUDA_VISIBLE_DEVICES=4,5,6,7
 
 ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 4 \
             --disable-usage-stats \
