@@ -29,3 +29,13 @@ eval:
       # task_ids:
       #   - fix-git
       n_concurrent: 8
+      harbor_kwargs:
+        # debug: true
+        timeout_multiplier: 2.0
+        retry_exclude:
+          - AgentTimeoutError
+          - VerifierTimeoutError
+        agent_kwarg:
+          model_info:
+            max_input_tokens: 40960
+            max_output_tokens: 8192

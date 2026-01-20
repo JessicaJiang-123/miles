@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,7 @@ class EvalRequestPayload:
     task_ids: list[str] | None = None
     metric_prefix: str | None = None
     output_path: str | None = None
+    harbor_kwargs: dict[str, Any] | None = None
 
 @dataclass
 class JobRecord:
@@ -108,6 +110,7 @@ def _normalize_model_name(model_name: str) -> str:
         return name
     return f"openai/{name}"
 
+
 def _normalize_runner(runner: str | None) -> str:
     value = (runner or "").strip().lower()
     if not value:
@@ -117,6 +120,43 @@ def _normalize_runner(runner: str | None) -> str:
     raise ValueError(
         f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
     )
+
+
+def _snake_to_kebab(value: str) -> str:
+    return value.replace("_", "-")
+
+
+def _json_value(value: Any) -> str:
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _append_harbor_kwargs(cmd: list[str], harbor_kwargs: Mapping[str, Any]) -> None:
+    for key, value in harbor_kwargs.items():
+        flag = f"--{_snake_to_kebab(str(key))}"
+        if isinstance(value, bool):
+            if value:
+                cmd.append(flag)
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    cmd.extend([flag, _json_value(item)])
+                else:
+                    cmd.extend([flag, str(item)])
+            continue
+        if isinstance(value, dict):
+            if key == "agent_kwarg":
+                for agent_key, agent_value in value.items():
+                    if isinstance(agent_value, (dict, list)):
+                        agent_value_str = _json_value(agent_value)
+                    else:
+                        agent_value_str = str(agent_value)
+                    cmd.extend([flag, f"{agent_key}={agent_value_str}"])
+            else:
+                cmd.extend([flag, _json_value(value)])
+            continue
+        cmd.extend([flag, str(value)])
+
 
 @dataclass
 class ServerConfig:
@@ -133,8 +173,7 @@ class TerminalBenchEvaluator:
         self._lock = threading.Lock()
         self._jobs_lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
-        self._config.output_root.mkdir(parents=True, exist_ok=True)
-        self._log_root = REPO_ROOT.parent / "tb_eval_logs"
+        self._log_root = REPO_ROOT.parent / "tb_server_logs"
         self._log_root.mkdir(parents=True, exist_ok=True)
 
     def evaluate(self, payload: EvalRequestPayload) -> dict[str, Any]:
@@ -283,6 +322,10 @@ class TerminalBenchEvaluator:
         if job_name:
             cmd.extend(["--job-name", job_name])
 
+        harbor_kwargs = payload.harbor_kwargs or {}
+        if harbor_kwargs:
+            _append_harbor_kwargs(cmd, harbor_kwargs)
+
         task_ids = [str(item) for item in (payload.task_ids or []) if item]
         if task_ids:
             for task_name in task_ids:
@@ -302,6 +345,7 @@ class TerminalBenchEvaluator:
             f"{dataset_name}=={dataset_version}",
         ]
         output_root = str(Path(payload.output_path or self._config.output_root).expanduser())
+        Path(output_root).mkdir(parents=True, exist_ok=True)
         cmd.extend(["--output-path", output_root, "--run-id", run_id])
         
         task_ids = [str(item) for item in (payload.task_ids or []) if item]
