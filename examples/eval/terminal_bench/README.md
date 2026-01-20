@@ -76,8 +76,7 @@ Run on the host (same machine where `tb`/`harbor` works). Match the port in your
 eval config (examples use `9051`):
 
 ```bash
-python miles/examples/eval/terminal_bench/tb_server.py \
-  --host 0.0.0.0 --port 9051 
+python miles/examples/eval/terminal_bench/tb_server.py --host 0.0.0.0 --port 9051 
 ```
 
 What it does:
@@ -92,9 +91,9 @@ What it does:
 
 ## 6) Run the eval script (example)
 
-If you use the provided Qwen eval launcher (`run-eval-tb-qwen.sh`), follow the steps below to run Terminal-Bench evaluation.
-`harbor_runner.yaml`
-`tb_runner.yaml`
+If you use the provided Qwen eval launcher (`run-eval-tb-qwen.sh`), follow the steps below to run Terminal-Bench evaluation. Configure the runner via `harbor_runner.yaml` or `tb_runner.yaml`. runner_kwargs is used to pass through extra CLI arguments, new parameters can be added directly via runner_kwargs.
+
+
 Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
@@ -121,12 +120,6 @@ Finally, run the following command inside the Miles container:
 ```bash
 bash miles/examples/eval/scripts/terminal_bench/run-eval-tb-qwen.sh 2>&1 | tee run.log
 ```
-
-For convenience, you can restrict the evaluation scope in
-`miles/examples/eval/scripts/terminal_bench/harbor_runner.yaml` or
-`miles/examples/eval/scripts/terminal_bench/tb_runner.yaml`, either by
-specifying a single task or multiple tasks (`task_ids`), or by limiting the
-number of tasks via `n_tasks` (TB 1.0 only).
 
 ## 7) Common Issues
 

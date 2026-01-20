@@ -123,9 +123,9 @@ MISC_ARGS=(
 )
 
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3"}
 
-ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 2 \
+ray start --head --node-ip-address ${MASTER_ADDR} --port 6380 --num-gpus 4 \
             --disable-usage-stats \
             --dashboard-host=0.0.0.0 \
             --dashboard-port=8266 \
@@ -154,7 +154,7 @@ ray job submit --address="http://${MASTER_ADDR}:8266" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 2 \
+   --actor-num-gpus-per-node 4 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
