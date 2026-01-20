@@ -63,7 +63,7 @@ class EvalRequestPayload:
     task_ids: list[str] | None = None
     metric_prefix: str | None = None
     output_path: str | None = None
-    harbor_kwargs: dict[str, Any] | None = None
+    runner_kwargs: dict[str, Any] | None = None
 
 @dataclass
 class JobRecord:
@@ -131,8 +131,8 @@ def _json_value(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"))
 
 
-def _append_harbor_kwargs(cmd: list[str], harbor_kwargs: Mapping[str, Any]) -> None:
-    for key, value in harbor_kwargs.items():
+def _append_runner_kwargs(cmd: list[str], runner_kwargs: Mapping[str, Any]) -> None:
+    for key, value in runner_kwargs.items():
         flag = f"--{_snake_to_kebab(str(key))}"
         if isinstance(value, bool):
             if value:
@@ -328,9 +328,9 @@ class TerminalBenchEvaluator:
         if job_name:
             cmd.extend(["--job-name", job_name])
 
-        harbor_kwargs = payload.harbor_kwargs or {}
-        if harbor_kwargs:
-            _append_harbor_kwargs(cmd, harbor_kwargs)
+        runner_kwargs = payload.runner_kwargs or {}
+        if runner_kwargs:
+            _append_runner_kwargs(cmd, runner_kwargs)
 
         task_ids = [str(item) for item in (payload.task_ids or []) if item]
         if task_ids:
@@ -354,6 +354,10 @@ class TerminalBenchEvaluator:
         Path(output_root).mkdir(parents=True, exist_ok=True)
         cmd.extend(["--output-path", output_root, "--run-id", run_id])
         
+        runner_kwargs = payload.runner_kwargs or {}
+        if runner_kwargs:
+            _append_runner_kwargs(cmd, runner_kwargs)
+
         task_ids = [str(item) for item in (payload.task_ids or []) if item]
         if task_ids:
             for task_id in task_ids:

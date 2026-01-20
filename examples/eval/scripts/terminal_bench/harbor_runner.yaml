@@ -29,7 +29,7 @@ eval:
       # task_ids:
       #   - fix-git
       n_concurrent: 8
-      harbor_kwargs:
+      runner_kwargs:
         # debug: true
         timeout_multiplier: 2.0
         retry_exclude:

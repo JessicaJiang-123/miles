@@ -64,8 +64,8 @@ class TerminalBenchClient(EvalClient):
         }
         if self._config.task_ids:
             payload["task_ids"] = list(self._config.task_ids)
-        if self._config.harbor_kwargs:
-            payload["harbor_kwargs"] = dict(self._config.harbor_kwargs)
+        if self._config.runner_kwargs:
+            payload["runner_kwargs"] = dict(self._config.runner_kwargs)
         return payload
     
     def _payload_tb(self) -> dict[str, Any]:

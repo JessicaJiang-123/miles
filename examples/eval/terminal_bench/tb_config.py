@@ -21,7 +21,7 @@ class TerminalBenchConfig(EvalEnvConfig):
     n_tasks: int | None = None
     task_ids: list[str] = field(default_factory=list)
     n_concurrent: int = 8
-    harbor_kwargs: dict[str, Any] = field(default_factory=dict)
+    runner_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def parse(cls, args, raw_env_config: Mapping[str, Any], defaults: Mapping[str, Any]) -> TerminalBenchConfig:
@@ -72,9 +72,9 @@ class TerminalBenchConfig(EvalEnvConfig):
         elif task_ids is not None:
             raise ValueError("task_ids must be a list")
 
-        harbor_kwargs = clean_raw.get("harbor_kwargs")
-        if harbor_kwargs is not None:
-            base_cfg.harbor_kwargs = dict(harbor_kwargs)
+        runner_kwargs = clean_raw.get("runner_kwargs")
+        if runner_kwargs is not None:
+            base_cfg.runner_kwargs = dict(runner_kwargs)
 
         return base_cfg
 
