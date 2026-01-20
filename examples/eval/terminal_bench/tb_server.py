@@ -20,6 +20,7 @@ import cmd
 import json
 import logging
 import os
+import pty
 import shlex
 import statistics
 import subprocess
@@ -248,7 +249,12 @@ class TerminalBenchEvaluator:
         logger.info("Starting Terminal Bench run: %s", " ".join(shlex.quote(part) for part in command))
         try:
             with self._lock:
-                self._run_command(command, env=env, log_path=log_path)
+                self._run_command(
+                    command,
+                    env=env,
+                    log_path=log_path,
+                    use_pty=True,
+                )
             metrics = self._collect_metrics(run_dir, runner, payload)
             if payload.metric_prefix:
                 metrics = {payload.metric_prefix: metrics}
@@ -364,23 +370,58 @@ class TerminalBenchEvaluator:
         return env
 
     @staticmethod
-    def _run_command(cmd: list[str], *, env: dict[str, str], log_path: Path):
-        with open(log_path, "w", encoding="utf-8") as log_file:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-                text=True,
-                bufsize=1,
-            )
-            assert process.stdout is not None
-            for line in process.stdout:
-                log_file.write(line)
-                log_file.flush()
-                sys.stdout.write(line)
-                sys.stdout.flush()
-            retcode = process.wait()
+    def _run_command(
+        cmd: list[str],
+        *,
+        env: dict[str, str],
+        log_path: Path,
+        use_pty: bool = False,
+    ):
+        if use_pty:
+            env = env.copy()
+            env.setdefault("TERM", "xterm-256color")
+            env.setdefault("RICH_FORCE_TERMINAL", "1")
+            with open(log_path, "ab") as log_file:
+                master_fd, slave_fd = pty.openpty()
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    env=env,
+                )
+                os.close(slave_fd)
+                try:
+                    while True:
+                        try:
+                            data = os.read(master_fd, 1024)
+                        except OSError:
+                            break
+                        if not data:
+                            break
+                        log_file.write(data)
+                        log_file.flush()
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                finally:
+                    os.close(master_fd)
+                retcode = process.wait()
+        else:
+            with open(log_path, "w", encoding="utf-8") as log_file:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    text=True,
+                    bufsize=1,
+                )
+                assert process.stdout is not None
+                for line in process.stdout:
+                    log_file.write(line)
+                    log_file.flush()
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                retcode = process.wait()
         if retcode != 0:
             with open(log_path, encoding="utf-8", errors="ignore") as log_file:
                 tail = "".join(log_file.readlines()[-200:])
