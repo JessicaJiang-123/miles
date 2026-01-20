@@ -12,8 +12,8 @@ This folder wires Terminal Bench (TB) into Miles as an eval delegate. The run ha
 ## 1) Get the code (host)
 
 ```bash
-mkdir miles-harbor
-cd miles-harbor
+mkdir miles-tb
+cd miles-tb
 git clone https://github.com/radixark/miles.git
 ```
 
@@ -31,7 +31,7 @@ docker run \
   --ulimit stack=67108864 \
   --ulimit nofile=65536:65536 \
   -v /data/cache:/root/.cache \
-  -v $(pwd):/shared/miles-harbor \
+  -v $(pwd):/shared/miles-tb \
   --name <miles container name> \
   radixark/miles:latest \
   /bin/bash
@@ -57,7 +57,6 @@ uv pip install -r miles/examples/eval/terminal_bench/requirements.txt
 Terminal Bench 2.0 (default, via harbor):
 
 ```bash
-# uv tool install harbor
 uv pip install harbor
 ```
 
@@ -73,7 +72,8 @@ Notes:
 
 ## 5) Start the Terminal Bench server
 
-Run on the host (same machine where `tb` works):
+Run on the host (same machine where `tb`/`harbor` works). Match the port in your
+eval config (examples use `9051`):
 
 ```bash
 python miles/examples/eval/terminal_bench/tb_server.py \
@@ -82,8 +82,10 @@ python miles/examples/eval/terminal_bench/tb_server.py \
 
 What it does:
 - Uses `OPENAI_API_KEY=EMPTY`
-- Runs `harbor run -d terminal-bench@2.0 -a terminus-2 -m openai/<model> ... -n 8` by default
-- Supports `tb run ... --n-concurrent 8` when `runner: tb` is used
+- For `runner: harbor`, builds a command like:
+  `harbor run -d terminal-bench@2.0 --jobs-dir <output_path> --job-name <run_id> --model openai/<model> --agent <agent> --agent-kwarg api_base=... --n-concurrent <n> ...`
+- For `runner: tb`, builds a command like:
+  `tb run -d terminal-bench-core==0.1.1 --output-path <output_path> --run-id <run_id> --model openai/<model> --agent <agent> --agent-kwarg api_base=... --n-concurrent <n> ...`
 - Waits for completion, then returns `accuracy`, `n_resolved`,
   `n_unresolved`, `pass_at_k/*`, and token stats such as
   `total_input_tokens_mean/median` and `total_output_tokens_mean/median`
@@ -91,11 +93,8 @@ What it does:
 ## 6) Run the eval script (example)
 
 If you use the provided Qwen eval launcher (`run-eval-tb-qwen.sh`), follow the steps below to run Terminal-Bench evaluation.
-
-For Terminal Bench 2.0, set `runner: harbor` and specify `dataset_name`, `dataset_version`, and `jobs_dir` in `eval_tb_example.yaml`. No local `terminal-bench/tasks` path is needed.
-
-For Terminal Bench 1.0, set `runner: tb` and update the `dataset_path` to the local path of `terminal-bench/tasks` on your host (not an internal Docker-only path). 
-
+`harbor_runner.yaml`
+`tb_runner.yaml`
 Then download the HuggingFace model checkpoint inside the Miles container:
 
 ```bash
@@ -106,10 +105,10 @@ huggingface-cli download open-thoughts/OpenThinker-Agent-v1 \
 After downloading, convert the HuggingFace checkpoint to Miles's torch distributed format. From the Miles root directory, run:
 
 ```bash
-cd /shared/miles-harbor/miles
+cd /shared/miles-tb/miles
 source scripts/models/qwen3-8B.sh
 
-export PYTHONPATH=/root/Megatron-LM:/shared/miles-harbor/miles
+export PYTHONPATH=/root/Megatron-LM:/shared/miles-tb/miles
 
 python tools/convert_hf_to_torch_dist.py \
   ${MODEL_ARGS[@]} \
@@ -123,7 +122,11 @@ Finally, run the following command inside the Miles container:
 bash miles/examples/eval/scripts/terminal_bench/run-eval-tb-qwen.sh 2>&1 | tee run.log
 ```
 
-For convenience, you can restrict the evaluation scope in `eval_tb_example.yaml`, either by specifying a single task or multiple tasks (`task_ids`), or by limiting the number of tasks via `n_tasks`.
+For convenience, you can restrict the evaluation scope in
+`miles/examples/eval/scripts/terminal_bench/harbor_runner.yaml` or
+`miles/examples/eval/scripts/terminal_bench/tb_runner.yaml`, either by
+specifying a single task or multiple tasks (`task_ids`), or by limiting the
+number of tasks via `n_tasks` (TB 1.0 only).
 
 ## 7) Common Issues
 
@@ -133,10 +136,10 @@ In some cases, this manifests as Ray failing to start or reporting Redis- or ses
 
 In more severe cases, Ray job submission may fail with errors indicating that no available agent can accept jobs. This typically happens when the dashboard agent or runtime environment agent ports are also in conflict. In such situations, explicitly specifying the agent-related ports (e.g. `--dashboard-agent-listen-port`, `--dashboard-agent-grpc-port`, and `--runtime-env-agent-port`) when starting Ray can resolve the issue.
 
-If the TB server cannot connect to the Miles server through the sglang router (`InternalServerError`), check which address is actually listening on the router port (e.g. 30005 in this example) and update the `api_base` in `eval_tb_example.yaml` accordingly:
+If the TB server cannot connect to the Miles server through the sglang router (`InternalServerError`), check which address is actually listening on the router port (e.g. 30005 in this example) and update the `api_base` in `harbor_runner.yaml` or `tb_runner.yaml` accordingly:
 
 ```bash
 ss -lntp | grep 30005
 ```
 
-You may see `Parser warnings`, `Context length exceeded`, `Command 1 should end with newline`, `Harness execution failed` in `tb_server.py` logs. They are warnings from Terminal Bench and can be ignored if runs proceed normally.
+You may see `Parser warnings`, `Context length exceeded`, `Command 1 should end with newline`, `Harness execution failed`, `Provider List` in `tb_server.py` logs. They are warnings from Terminal Bench and can be ignored if runs proceed normally.
