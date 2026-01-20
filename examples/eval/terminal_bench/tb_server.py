@@ -70,7 +70,6 @@ class JobRecord:
     run_id: str
     command: str
     output_dir: str
-    log_path: str
     raw_metrics: dict[str, Any] | None = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
@@ -84,7 +83,6 @@ class JobRecord:
             "run_id": self.run_id,
             "command": self.command,
             "output_dir": self.output_dir,
-            "log_path": self.log_path,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -172,8 +170,6 @@ class TerminalBenchEvaluator:
         self._lock = threading.Lock()
         self._jobs_lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
-        self._log_root = REPO_ROOT.parent / "tb_server_logs"
-        self._log_root.mkdir(parents=True, exist_ok=True)
 
     def evaluate(self, payload: EvalRequestPayload) -> dict[str, Any]:
         if not payload.model_name:
@@ -197,7 +193,6 @@ class TerminalBenchEvaluator:
 
         command = self._build_command(payload, run_id, runner, job_name)
         command_str = " ".join(shlex.quote(part) for part in command)
-        log_path = self._log_root / f"{run_id}.log"
 
         record = JobRecord(
             job_id=job_id,
@@ -205,14 +200,13 @@ class TerminalBenchEvaluator:
             run_id=run_id,
             command=command_str,
             output_dir=str(run_dir),
-            log_path=str(log_path),
         )
         with self._jobs_lock:
             self._jobs[job_id] = record
 
         thread = threading.Thread(
             target=self._run_job,
-            args=(job_id, payload, run_dir, command, log_path, runner),
+            args=(job_id, payload, run_dir, command, runner),
             daemon=True,
         )
         thread.start()
@@ -224,7 +218,6 @@ class TerminalBenchEvaluator:
             "run_id": run_id,
             "command": command_str,
             "output_dir": str(run_dir),
-            "log_path": str(log_path),
         }
 
     def _run_job(
@@ -233,7 +226,6 @@ class TerminalBenchEvaluator:
         payload: EvalRequestPayload,
         run_dir: Path,
         command: list[str],
-        log_path: Path,
         runner: str,
     ) -> None:
         with self._jobs_lock:
@@ -250,8 +242,6 @@ class TerminalBenchEvaluator:
                 self._run_command(
                     command,
                     env=env,
-                    log_path=log_path,
-                    use_pty=True,
                 )
             metrics = self._collect_metrics(run_dir, runner, payload)
             if payload.metric_prefix:
@@ -362,58 +352,33 @@ class TerminalBenchEvaluator:
         cmd: list[str],
         *,
         env: dict[str, str],
-        log_path: Path,
-        use_pty: bool = False,
     ):
-        if use_pty:
-            env = env.copy()
-            env.setdefault("TERM", "xterm-256color")
-            env.setdefault("RICH_FORCE_TERMINAL", "1")
-            with open(log_path, "ab") as log_file:
-                master_fd, slave_fd = pty.openpty()
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    env=env,
-                )
-                os.close(slave_fd)
+        env = env.copy()
+        env.setdefault("TERM", "xterm-256color")
+        env.setdefault("RICH_FORCE_TERMINAL", "1")
+        master_fd, slave_fd = pty.openpty()
+        process = subprocess.Popen(
+            cmd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            env=env,
+        )
+        os.close(slave_fd)
+        try:
+            while True:
                 try:
-                    while True:
-                        try:
-                            data = os.read(master_fd, 1024)
-                        except OSError:
-                            break
-                        if not data:
-                            break
-                        log_file.write(data)
-                        log_file.flush()
-                        sys.stdout.buffer.write(data)
-                        sys.stdout.buffer.flush()
-                finally:
-                    os.close(master_fd)
-                retcode = process.wait()
-        else:
-            with open(log_path, "w", encoding="utf-8") as log_file:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    env=env,
-                    text=True,
-                    bufsize=1,
-                )
-                assert process.stdout is not None
-                for line in process.stdout:
-                    log_file.write(line)
-                    log_file.flush()
-                    sys.stdout.write(line)
-                    sys.stdout.flush()
-                retcode = process.wait()
+                    data = os.read(master_fd, 1024)
+                except OSError:
+                    break
+                if not data:
+                    break
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+        finally:
+            os.close(master_fd)
+        retcode = process.wait()
         if retcode != 0:
-            with open(log_path, encoding="utf-8", errors="ignore") as log_file:
-                tail = "".join(log_file.readlines()[-200:])
-            raise RuntimeError(f"Command failed with exit code {retcode}. See {log_path}\n{tail}")
+            raise RuntimeError(f"Command failed with exit code {retcode}.")
 
     @staticmethod
     def _collect_metrics(run_dir: Path, runner: str, payload: EvalRequestPayload) -> dict[str, Any]:
