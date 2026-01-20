@@ -26,10 +26,10 @@ eval:
       dataset_name: terminal-bench
       dataset_version: "2.0"
       output_path: harbor_runner_jobs
-      # task_ids:
-      #   - fix-git
       n_concurrent: 8
       runner_kwargs:
+        task_name:
+          - fix-git
         # debug: true
         timeout_multiplier: 2.0
         retry_exclude:

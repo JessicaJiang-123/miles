@@ -58,9 +58,7 @@ class EvalRequestPayload:
     runner: str | None = None
     dataset_name: str | None = None
     dataset_version: str | None = None
-    n_tasks: int | None = None
     n_concurrent: int | None = None
-    task_ids: list[str] | None = None
     metric_prefix: str | None = None
     output_path: str | None = None
     runner_kwargs: dict[str, Any] | None = None
@@ -332,13 +330,6 @@ class TerminalBenchEvaluator:
         if runner_kwargs:
             _append_runner_kwargs(cmd, runner_kwargs)
 
-        task_ids = [str(item) for item in (payload.task_ids or []) if item]
-        if task_ids:
-            for task_name in task_ids:
-                cmd.extend(["--task-name", task_name])
-        elif payload.n_tasks is not None:
-            raise ValueError("n_tasks is only supported for runner=tb.")
-        
         return cmd
 
     def _build_tb_command(self, payload: EvalRequestPayload, run_id: str) -> list[str]:
@@ -357,13 +348,6 @@ class TerminalBenchEvaluator:
         runner_kwargs = payload.runner_kwargs or {}
         if runner_kwargs:
             _append_runner_kwargs(cmd, runner_kwargs)
-
-        task_ids = [str(item) for item in (payload.task_ids or []) if item]
-        if task_ids:
-            for task_id in task_ids:
-                cmd.extend(["--task-id", task_id])
-        elif payload.n_tasks is not None:
-            cmd.extend(["--n-tasks", str(payload.n_tasks)])
 
         return cmd
 

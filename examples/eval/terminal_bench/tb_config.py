@@ -18,8 +18,6 @@ class TerminalBenchConfig(EvalEnvConfig):
     dataset_name: str = ""
     dataset_version: str = ""
     output_path: str | None = None
-    n_tasks: int | None = None
-    task_ids: list[str] = field(default_factory=list)
     n_concurrent: int = 8
     runner_kwargs: dict[str, Any] = field(default_factory=dict)
 
@@ -37,7 +35,6 @@ class TerminalBenchConfig(EvalEnvConfig):
             "dataset_name": lambda v: str(v).strip(),
             "dataset_version": lambda v: str(v).strip(),
             "output_path": lambda v: str(v).strip(),
-            "n_tasks": int,
             "n_concurrent": int,
         }
 
@@ -65,12 +62,6 @@ class TerminalBenchConfig(EvalEnvConfig):
                 base_cfg.dataset_name = "terminal-bench"
             if not base_cfg.dataset_version:
                 base_cfg.dataset_version = "2.0"
-
-        task_ids = clean_raw.get("task_ids")
-        if isinstance(task_ids, (list, tuple)):
-            base_cfg.task_ids = [str(item) for item in task_ids if item]
-        elif task_ids is not None:
-            raise ValueError("task_ids must be a list")
 
         runner_kwargs = clean_raw.get("runner_kwargs")
         if runner_kwargs is not None:

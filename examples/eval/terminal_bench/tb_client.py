@@ -46,8 +46,6 @@ class TerminalBenchClient(EvalClient):
             raise ValueError(
                 f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
             )
-        if runner == "tb":
-            payload.update(self._payload_tb())
         return payload
     
     def _base_payload(self) -> dict[str, Any]:
@@ -62,17 +60,10 @@ class TerminalBenchClient(EvalClient):
             "runner": self._config.runner,
             "output_path": self._config.output_path,
         }
-        if self._config.task_ids:
-            payload["task_ids"] = list(self._config.task_ids)
         if self._config.runner_kwargs:
             payload["runner_kwargs"] = dict(self._config.runner_kwargs)
         return payload
     
-    def _payload_tb(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
-        if self._config.n_tasks is not None:
-            payload["n_tasks"] = self._config.n_tasks
-        return payload
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         last_error: Exception | None = None
