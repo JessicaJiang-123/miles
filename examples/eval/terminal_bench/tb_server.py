@@ -648,6 +648,7 @@ def main():
     config = ServerConfig.from_args(args)
     evaluator = TerminalBenchEvaluator(config)
     app = build_app(evaluator)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
     logger.info(
         "Starting Terminal Bench evaluation server on %s:%s (output root=%s)",
         args.host,

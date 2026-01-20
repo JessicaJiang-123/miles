@@ -28,7 +28,7 @@ eval:
       output_path: harbor_runner_jobs
       # task_ids:
       #   - fix-git
-      n_concurrent: 8
+      n_concurrent: 2
       harbor_kwargs:
         # debug: true
         timeout_multiplier: 2.0
