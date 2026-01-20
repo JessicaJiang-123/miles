@@ -9,14 +9,12 @@ Usage:
 
 Miles (or Miles-compatible runners) should POST the payload described in
 `EvalRequestPayload` to http://<host>:<port>/evaluate. The server blocks until
-the run finishes, then returns aggregated metrics along with paths to the
-generated artifacts (logs + raw metrics).
+the run finishes, then returns aggregated metrics.
 """
 
 from __future__ import annotations
 
 import argparse
-import cmd
 import json
 import logging
 import os
@@ -32,10 +30,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from flask import Flask, jsonify, request
 from omegaconf import OmegaConf
