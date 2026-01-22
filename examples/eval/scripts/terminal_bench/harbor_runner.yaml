@@ -35,6 +35,7 @@ eval:
         # retry_exclude:
         #   - AgentTimeoutError
         #   - VerifierTimeoutError
+        n_attempts: 2
         agent_kwarg:
           model_info:
             max_input_tokens: 40960
