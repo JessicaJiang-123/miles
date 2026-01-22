@@ -28,6 +28,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,7 @@ class EvalRequestPayload:
     metric_prefix: str | None = None
     output_path: str | None = None
     runner_kwargs: dict[str, Any] | None = None
+
 
 @dataclass
 class JobRecord:
@@ -93,6 +95,11 @@ class JobRecord:
 # ---------------------------------------------------------------------------
 
 
+class Runner(str, Enum):
+    TB = "tb"
+    HARBOR = "harbor"
+
+
 def _normalize_model_name(model_name: str) -> str:
     name = (model_name or "").strip()
     if not name:
@@ -100,17 +107,6 @@ def _normalize_model_name(model_name: str) -> str:
     if "/" in name:
         return name
     return f"openai/{name}"
-
-
-def _normalize_runner(runner: str | None) -> str:
-    value = (runner or "").strip().lower()
-    if not value:
-        return "harbor"
-    if value in {"tb", "harbor"}:
-        return value
-    raise ValueError(
-        f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
-    )
 
 
 def _snake_to_kebab(value: str) -> str:
@@ -173,20 +169,11 @@ class TerminalBenchEvaluator:
 
         job_id = uuid.uuid4().hex
         run_id = f"{int(time.time())}-{job_id[:8]}"
-        runner = _normalize_runner(payload.runner)
-        job_name = None
-        if runner == "harbor":
-            jobs_dir = Path(payload.output_path or "jobs").expanduser()
-            jobs_dir.mkdir(parents=True, exist_ok=True)
-            job_name = run_id
-            run_dir = jobs_dir / job_name
-        else:
-            tb_root = Path(payload.output_path or self._config.output_root).expanduser()
-            tb_root.mkdir(parents=True, exist_ok=True)
-            run_dir = tb_root / run_id
+        runner = Runner(payload.runner)
+        run_dir, job_name = self._prepare_run_dir(payload, runner, run_id)
 
         command = self._build_command(payload, run_id, runner, job_name)
-        command_str = " ".join(shlex.quote(part) for part in command)
+        command_str = self._format_command(command)
 
         record = JobRecord(
             job_id=job_id,
@@ -222,12 +209,7 @@ class TerminalBenchEvaluator:
         command: list[str],
         runner: str,
     ) -> None:
-        with self._jobs_lock:
-            record = self._jobs.get(job_id)
-            if record is None:
-                return
-            record.status = "running"
-            record.started_at = time.time()
+        self._update_job(job_id, status="running", started_at=time.time())
 
         env = self._build_env()
         logger.info("Starting Terminal Bench run: %s", " ".join(shlex.quote(part) for part in command))
@@ -240,21 +222,19 @@ class TerminalBenchEvaluator:
             metrics = self._collect_metrics(run_dir, runner, payload)
             if payload.metric_prefix:
                 metrics = {payload.metric_prefix: metrics}
-            with self._jobs_lock:
-                record = self._jobs.get(job_id)
-                if record is None:
-                    return
-                record.status = "completed"
-                record.raw_metrics = metrics
-                record.finished_at = time.time()
+            self._update_job(
+                job_id,
+                status="completed",
+                raw_metrics=metrics,
+                finished_at=time.time(),
+            )
         except Exception as exc:  # noqa: BLE001
-            with self._jobs_lock:
-                record = self._jobs.get(job_id)
-                if record is None:
-                    return
-                record.status = "failed"
-                record.error = str(exc)
-                record.finished_at = time.time()
+            self._update_job(
+                job_id,
+                status="failed",
+                error=str(exc),
+                finished_at=time.time(),
+            )
 
     def get_job_status(self, job_id: str) -> dict[str, Any] | None:
         with self._jobs_lock:
@@ -267,17 +247,13 @@ class TerminalBenchEvaluator:
         self,
         payload: EvalRequestPayload,
         run_id: str,
-        runner: str,
+        runner: Runner,
         job_name: str | None,
     ) -> list[str]:
-        if runner == "harbor":
+        if runner is Runner.HARBOR:
             cmd = self._build_harbor_command(payload, job_name)
-        elif runner == "tb":
-            cmd = self._build_tb_command(payload, run_id)
         else:
-            raise ValueError(
-                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
-            )
+            cmd = self._build_tb_command(payload, run_id)
 
         model_name = _normalize_model_name(payload.model_name)
         if model_name:
@@ -310,9 +286,8 @@ class TerminalBenchEvaluator:
         if job_name:
             cmd.extend(["--job-name", job_name])
 
-        runner_kwargs = payload.runner_kwargs or {}
-        if runner_kwargs:
-            _append_runner_kwargs(cmd, runner_kwargs)
+        if payload.runner_kwargs:
+            _append_runner_kwargs(cmd, payload.runner_kwargs)
 
         return cmd
 
@@ -328,12 +303,37 @@ class TerminalBenchEvaluator:
         output_root = str(Path(payload.output_path or self._config.output_root).expanduser())
         Path(output_root).mkdir(parents=True, exist_ok=True)
         cmd.extend(["--output-path", output_root, "--run-id", run_id])
-        
-        runner_kwargs = payload.runner_kwargs or {}
-        if runner_kwargs:
-            _append_runner_kwargs(cmd, runner_kwargs)
+        if payload.runner_kwargs:
+            _append_runner_kwargs(cmd, payload.runner_kwargs)
 
         return cmd
+
+    def _prepare_run_dir(
+        self,
+        payload: EvalRequestPayload,
+        runner: Runner,
+        run_id: str,
+    ) -> tuple[Path, str | None]:
+        if runner is Runner.HARBOR:
+            jobs_dir = Path(payload.output_path or "jobs").expanduser()
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            return jobs_dir / run_id, run_id
+
+        tb_root = Path(payload.output_path or self._config.output_root).expanduser()
+        tb_root.mkdir(parents=True, exist_ok=True)
+        return tb_root / run_id, None
+
+    def _update_job(self, job_id: str, **updates: Any) -> None:
+        with self._jobs_lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                return
+            for key, value in updates.items():
+                setattr(record, key, value)
+
+    @staticmethod
+    def _format_command(command: list[str]) -> str:
+        return " ".join(shlex.quote(part) for part in command)
 
     def _build_env(self) -> dict[str, str]:
         env = os.environ.copy()
@@ -375,8 +375,8 @@ class TerminalBenchEvaluator:
             raise RuntimeError(f"Command failed with exit code {retcode}.")
 
     @staticmethod
-    def _collect_metrics(run_dir: Path, runner: str, payload: EvalRequestPayload) -> dict[str, Any]:
-        if runner == "harbor":
+    def _collect_metrics(run_dir: Path, runner: Runner, payload: EvalRequestPayload) -> dict[str, Any]:
+        if runner is Runner.HARBOR:
             metrics_path = run_dir / "result.json"
             if not metrics_path.exists():
                 fallback = TerminalBenchEvaluator._find_latest_result(
@@ -435,25 +435,7 @@ class TerminalBenchEvaluator:
                     metrics[f"pass_at_k/{k}"] = float(v)
 
         # token stats from per-task results
-        results = metrics_data.get("results")
-        if isinstance(results, list):
-            input_tokens = [
-                r.get("total_input_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_input_tokens"), (int, float))
-            ]
-            output_tokens = [
-                r.get("total_output_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_output_tokens"), (int, float))
-            ]
-
-            if input_tokens:
-                metrics["total_input_tokens_mean"] = float(statistics.mean(input_tokens))
-                metrics["total_input_tokens_median"] = float(statistics.median(input_tokens))
-            if output_tokens:
-                metrics["total_output_tokens_mean"] = float(statistics.mean(output_tokens))
-                metrics["total_output_tokens_median"] = float(statistics.median(output_tokens))
+        metrics.update(TerminalBenchEvaluator._extract_token_stats(metrics_data.get("results")))
 
         return metrics
 
@@ -523,26 +505,33 @@ class TerminalBenchEvaluator:
             if unresolved is not None:
                 metrics["n_unresolved"] = unresolved
 
-        results = metrics_data.get("results")
-        if isinstance(results, list):
-            input_tokens = [
-                r.get("total_input_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_input_tokens"), (int, float))
-            ]
-            output_tokens = [
-                r.get("total_output_tokens")
-                for r in results
-                if isinstance(r, dict) and isinstance(r.get("total_output_tokens"), (int, float))
-            ]
+        metrics.update(TerminalBenchEvaluator._extract_token_stats(metrics_data.get("results")))
 
-            if input_tokens:
-                metrics["total_input_tokens_mean"] = float(statistics.mean(input_tokens))
-                metrics["total_input_tokens_median"] = float(statistics.median(input_tokens))
-            if output_tokens:
-                metrics["total_output_tokens_mean"] = float(statistics.mean(output_tokens))
-                metrics["total_output_tokens_median"] = float(statistics.median(output_tokens))
+        return metrics
 
+    @staticmethod
+    def _extract_token_stats(results: Any) -> dict[str, float]:
+        if not isinstance(results, list):
+            return {}
+
+        input_tokens = [
+            r.get("total_input_tokens")
+            for r in results
+            if isinstance(r, dict) and isinstance(r.get("total_input_tokens"), (int, float))
+        ]
+        output_tokens = [
+            r.get("total_output_tokens")
+            for r in results
+            if isinstance(r, dict) and isinstance(r.get("total_output_tokens"), (int, float))
+        ]
+
+        metrics: dict[str, float] = {}
+        if input_tokens:
+            metrics["total_input_tokens_mean"] = float(statistics.mean(input_tokens))
+            metrics["total_input_tokens_median"] = float(statistics.median(input_tokens))
+        if output_tokens:
+            metrics["total_output_tokens_mean"] = float(statistics.mean(output_tokens))
+            metrics["total_output_tokens_median"] = float(statistics.median(output_tokens))
         return metrics
 
     @staticmethod

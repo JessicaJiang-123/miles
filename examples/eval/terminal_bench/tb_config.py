@@ -43,12 +43,6 @@ class TerminalBenchConfig(EvalEnvConfig):
             if value is not None:
                 setattr(base_cfg, key, caster(value))
 
-        runner = (base_cfg.runner or "").strip().lower()
-        if runner not in {"tb", "harbor"}:
-            raise ValueError(
-                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
-            )
-        base_cfg.runner = runner
         runner_kwargs = clean_raw.get("runner_kwargs")
         if runner_kwargs is not None:
             base_cfg.runner_kwargs = dict(runner_kwargs)

@@ -40,14 +40,8 @@ class TerminalBenchClient(EvalClient):
         return metrics, response
 
     def _build_payload(self, args, rollout_id: int) -> dict[str, Any]:
-        payload = self._base_payload()
-        runner = self._config.runner
-        if runner not in {"tb", "harbor"}:
-            raise ValueError(
-                f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
-            )
-        return payload
-    
+        return self._base_payload()
+
     def _base_payload(self) -> dict[str, Any]:
         payload = {
             "model_name": self._config.model_name,
@@ -63,7 +57,6 @@ class TerminalBenchClient(EvalClient):
         if self._config.runner_kwargs:
             payload["runner_kwargs"] = dict(self._config.runner_kwargs)
         return payload
-    
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         last_error: Exception | None = None
