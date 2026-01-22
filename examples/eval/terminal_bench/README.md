@@ -1,6 +1,6 @@
 # Terminal Bench Eval
 
-This folder wires Terminal Bench (TB) into Miles as an eval delegate. The run happens on the host via `harbor run` (Terminal Bench 2.0, default) or `tb run` (Terminal Bench 1.0, legacy). Miles reads back aggregated metrics such as `accuracy`, `n_resolved`, `n_unresolved`, `pass_at_k/*`, and token stats like `total_input_tokens_mean/median` and `total_output_tokens_mean/median`.
+This folder wires Terminal Bench (TB) into Miles as an eval delegate. The run happens on the host via `harbor run` (Terminal Bench 2.0, default) or `tb run` (Terminal Bench 1.0, legacy). Metrics extraction lives in `utils/metrics.py` and command construction lives in `utils/runner.py`.
 
 ## What runs where
 
@@ -85,9 +85,11 @@ What it does:
   `harbor run -d terminal-bench@2.0 --jobs-dir <output_path> --job-name <run_id> --model openai/<model> --agent <agent> --agent-kwarg api_base=... --n-concurrent <n> ...`
 - For `runner: tb`, builds a command like:
   `tb run -d terminal-bench-core==0.1.1 --output-path <output_path> --run-id <run_id> --model openai/<model> --agent <agent> --agent-kwarg api_base=... --n-concurrent <n> ...`
-- Waits for completion, then returns `accuracy`, `n_resolved`,
-  `n_unresolved`, `pass_at_k/*`, and token stats such as
-  `total_input_tokens_mean/median` and `total_output_tokens_mean/median`
+- Waits for completion, then returns TB metrics (`accuracy`, `n_resolved`,
+  `n_unresolved`, `pass_at_k/*`, `total_input_tokens_mean/median/min/max`,
+  `total_output_tokens_mean/median`) or Harbor metrics (`n_trials`, `n_errors`,
+  `metrics` entries like `mean`, `reward_stats/*`, `exception_stats/*`,
+  `n_input_tokens/*`, `n_output_tokens/*`).
 
 ## 6) Run the eval script (example)
 
