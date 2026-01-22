@@ -15,8 +15,8 @@ class TerminalBenchConfig(EvalEnvConfig):
     agent_name: str = "terminus-2"
     api_base: str = "http://127.0.1.1:30001/v1"
     runner: str = "harbor"
-    dataset_name: str = ""
-    dataset_version: str = ""
+    dataset_name: str = "terminal-bench"
+    dataset_version: str = "2.0"
     output_path: str | None = None
     n_concurrent: int = 8
     runner_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -44,25 +44,11 @@ class TerminalBenchConfig(EvalEnvConfig):
                 setattr(base_cfg, key, caster(value))
 
         runner = (base_cfg.runner or "").strip().lower()
-        if not runner:
-            runner = "harbor"
-        elif runner not in {"tb", "harbor"}:
+        if runner not in {"tb", "harbor"}:
             raise ValueError(
                 f"Invalid runner: {runner}. Supported values are: tb (Terminal Bench 1.0), harbor (Terminal Bench 2.0)."
             )
         base_cfg.runner = runner
-        # runner-specific defaults
-        if runner == "tb":
-            if not base_cfg.dataset_name:
-                base_cfg.dataset_name = "terminal-bench-core"
-            if not base_cfg.dataset_version:
-                base_cfg.dataset_version = "0.1.1"
-        else:
-            if not base_cfg.dataset_name:
-                base_cfg.dataset_name = "terminal-bench"
-            if not base_cfg.dataset_version:
-                base_cfg.dataset_version = "2.0"
-
         runner_kwargs = clean_raw.get("runner_kwargs")
         if runner_kwargs is not None:
             base_cfg.runner_kwargs = dict(runner_kwargs)
