@@ -27,7 +27,8 @@ export DATA_DIR
 # For AMD GPU
 export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"} # Must set to 1
 # export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"} #You can choose which gpus to use
-export HIP_VISIBLE_DEVICES=4,5,6,7
+# export HIP_VISIBLE_DEVICES=4,5,6,7
+export HIP_VISIBLE_DEVICES=0,1,2,3
 ####################
 
 

@@ -1,7 +1,8 @@
 #!/bin/bash
-# top_amd 副本：修复 PYTHONPATH 以兼容 /app 容器布局（原脚本使用 /workspace）
+# top_amd 4B 副本：修复 PYTHONPATH 以兼容 /app 容器布局
+# 一键跑通方案，由 run.py 调用（自动下载模型/数据后启动）
 
-# bash top_amd/run-qwen3-8B-amd.sh
+# bash top_amd/run-qwen3-4B-amd.sh
 
 
 ####clear before training
@@ -22,28 +23,29 @@ set -euxo pipefail
 MILES_DIR="${MILES_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}"
 export MILES_DIR
 
-MODEL_DIR="${MODEL_DIR:-/home/yushensu/projects/model}"
+MODEL_DIR="${MODEL_DIR:-/data/cache/huggingface/models}"
 export MODEL_DIR
 
-DATA_DIR="${DATA_DIR:-/home/yushensu/projects/data}"
+DATA_DIR="${DATA_DIR:-/data/cache/huggingface/datasets}"
 export DATA_DIR
 
-# For AMD GPU
+# For AMD GPU（4 卡，可改 0,1,2,3 或 4,5,6,7）
 export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES:-"1"}
-export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"}
+export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-"0,1,2,3"}
 ####################
 
 
 export PYTHONBUFFERED=16
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/scripts"
-source "${SCRIPT_DIR}/models/qwen3-8B.sh"
+source "${SCRIPT_DIR}/models/qwen3-4B.sh"
 
+# 首次训练：Qwen3-4B_miles/ 为空时 load 自动用 ref_load(torch_dist)；续训：从 miles 加载
 CKPT_ARGS=(
-   --hf-checkpoint ${MODEL_DIR}/Qwen3-8B
-   --ref-load ${MODEL_DIR}/Qwen3-8B_torch_dist
-   --load ${MODEL_DIR}/Qwen3-8B_miles/
-   --save ${MODEL_DIR}/Qwen3-8B_miles/
+   --hf-checkpoint ${MODEL_DIR}/Qwen3-4B
+   --ref-load ${MODEL_DIR}/Qwen3-4B_torch_dist
+   --load ${MODEL_DIR}/Qwen3-4B_miles/
+   --save ${MODEL_DIR}/Qwen3-4B_miles/
    --save-interval 20
 )
 
@@ -110,8 +112,7 @@ WANDB_ARGS=(
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.7
-   # (AMD) 避免 AITER custom all-reduce 的 hipIpcOpenMemHandle 错误，
-   # 与 torch_memory_saver offload 冲突导致 invalid device pointer
+   # (AMD) 避免 AITER custom all-reduce 与 torch_memory_saver offload 冲突
    --sglang-disable-custom-all-reduce
 )
 ####################
@@ -144,7 +145,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    }" \
    -- python3 train.py \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node 8 \
+   --actor-num-gpus-per-node 4 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \

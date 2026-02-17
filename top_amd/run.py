@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Qwen3-8B AMD 一键训练脚本
-注：此 8B 方案暂未跑通；已跑通的是 4B：bash scripts/run-qwen3-4B-amd.sh（在 miles 根目录）
-
-自动下载模型/数据并启动训练，使用 top_amd 内的 run-qwen3-8B-amd.sh（已修复 PYTHONPATH）
+Qwen3-4B AMD 一键训练脚本
+自动下载模型/数据并启动训练。默认 Megatron 后端，加 --fsdp 使用 FSDP 后端。
 
 用法:
-  cd /mnt/data/yuzhen1/top/miles && python top_amd/run.py
+  cd /mnt/data/yuzhen1/top/miles && python top_amd/run.py           # Megatron
+  cd /mnt/data/yuzhen1/top/miles && python top_amd/run.py --fsdp   # FSDP
 
 环境变量(可选):
   TOP_AMD_CACHE      大文件缓存目录，默认 /data/cache/huggingface
   TOP_AMD_MODEL_DIR  模型目录，默认 {CACHE}/models
   TOP_AMD_DATA_DIR   数据目录，默认 {CACHE}/datasets
-  HIP_VISIBLE_DEVICES  使用的 GPU，默认 0,1,2,3,4,5,6,7
+  HIP_VISIBLE_DEVICES  使用的 GPU，默认 4,5,6,7
 """
 
 import os
@@ -41,8 +40,8 @@ def get_data_dir() -> str:
     return os.environ.get("TOP_AMD_DATA_DIR", f"{cache}/datasets")
 
 
-def prepare():
-    """下载模型、转换权重、数据集"""
+def prepare(need_torch_dist: bool = True):
+    """下载模型、转换权重、数据集。FSDP 模式不需要 torch_dist。"""
     model_dir = get_model_dir()
     data_dir = get_data_dir()
 
@@ -51,23 +50,26 @@ def prepare():
     print("=" * 60)
     exec_command(f"mkdir -p {model_dir} {data_dir}")
 
-    hf_path = f"{model_dir}/Qwen3-8B"
+    hf_path = f"{model_dir}/Qwen3-4B"
     if not Path(hf_path).exists() or not (Path(hf_path) / "config.json").exists():
         print("\n" + "=" * 60)
-        print("Step 2: 下载 Qwen3-8B (HuggingFace)")
+        print("Step 2: 下载 Qwen3-4B (HuggingFace)")
         print("=" * 60)
-        exec_command(f"hf download Qwen/Qwen3-8B --local-dir {hf_path}")
+        exec_command(f"hf download Qwen/Qwen3-4B --local-dir {hf_path}")
     else:
         print(f"跳过: {hf_path} 已存在")
 
-    torch_dist_path = f"{model_dir}/Qwen3-8B_torch_dist"
-    if not Path(torch_dist_path).exists():
-        print("\n" + "=" * 60)
-        print("Step 3: 下载 Qwen3-8B_torch_dist (AMD 预转换)")
-        print("=" * 60)
-        exec_command(f"hf download zyzshishui0627/Qwen3-8B_torch_dist --local-dir {torch_dist_path}")
+    if need_torch_dist:
+        torch_dist_path = f"{model_dir}/Qwen3-4B_torch_dist"
+        if not Path(torch_dist_path).exists():
+            print("\n" + "=" * 60)
+            print("Step 3: 下载 Qwen3-4B_torch_dist (AMD 预转换，Megatron 用)")
+            print("=" * 60)
+            exec_command(f"hf download yushengsu/Qwen3-4B-torch-dist --local-dir {torch_dist_path}")
+        else:
+            print(f"跳过: {torch_dist_path} 已存在")
     else:
-        print(f"跳过: {torch_dist_path} 已存在")
+        print("\n(FSDP 模式跳过 torch_dist 下载)")
 
     dapo_path = f"{data_dir}/dapo-math-17k"
     if not Path(dapo_path).exists():
@@ -87,7 +89,7 @@ def prepare():
     else:
         print(f"跳过: {aime_path} 已存在")
 
-    exec_command(f"mkdir -p {model_dir}/Qwen3-8B_miles")
+    exec_command(f"mkdir -p {model_dir}/Qwen3-4B_miles {model_dir}/Qwen3-4B_miles_fsdp")
     print("\n" + "=" * 60)
     print("Prepare 完成!")
     print("=" * 60)
@@ -102,16 +104,44 @@ def execute():
     os.environ["MODEL_DIR"] = model_dir
     os.environ["DATA_DIR"] = data_dir
     os.environ.setdefault("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES", "1")
-    os.environ.setdefault("HIP_VISIBLE_DEVICES", "0,1,2,3,4,5,6,7")
+    os.environ.setdefault("HIP_VISIBLE_DEVICES", "0,1,2,3")
     os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
 
-    # 使用 top_amd 内副本（已修复 Megatron PYTHONPATH）
-    script_path = SCRIPT_DIR / "run-qwen3-8B-amd.sh"
+    script_path = SCRIPT_DIR / "run-qwen3-4B-amd.sh"
     if not script_path.exists():
         raise FileNotFoundError(f"找不到 {script_path}")
 
     print("=" * 60)
-    print("启动训练 (top_amd/run-qwen3-8B-amd.sh)")
+    print("启动训练 (top_amd/run-qwen3-4B-amd.sh)")
+    print(f"  MODEL_DIR={model_dir}")
+    print(f"  DATA_DIR={data_dir}")
+    print("=" * 60)
+
+    subprocess.run(
+        ["bash", str(script_path)],
+        cwd=str(MILES_ROOT),
+        env=os.environ,
+    )
+
+
+def execute_fsdp():
+    """启动 AMD FSDP 训练（使用 scripts/run-qwen3-4B-amd-fsdp.sh）"""
+    model_dir = get_model_dir()
+    data_dir = get_data_dir()
+
+    os.environ["MILES_DIR"] = str(MILES_ROOT)
+    os.environ["MODEL_DIR"] = model_dir
+    os.environ["DATA_DIR"] = data_dir
+    os.environ.setdefault("RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES", "1")
+    os.environ.setdefault("HIP_VISIBLE_DEVICES", "0,1,2,3")
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+
+    script_path = MILES_ROOT / "scripts" / "run-qwen3-4B-amd-fsdp.sh"
+    if not script_path.exists():
+        raise FileNotFoundError(f"找不到 {script_path}")
+
+    print("=" * 60)
+    print("启动 FSDP 训练 (scripts/run-qwen3-4B-amd-fsdp.sh)")
     print(f"  MODEL_DIR={model_dir}")
     print(f"  DATA_DIR={data_dir}")
     print("=" * 60)
@@ -124,10 +154,11 @@ def execute():
 
 
 if __name__ == "__main__":
+    use_fsdp = "--fsdp" in sys.argv
     if "--prepare-only" in sys.argv:
-        prepare()
+        prepare(need_torch_dist=not use_fsdp)
         print("\n仅下载完成，跳过训练。直接运行可开始训练:")
-        print("  python top_amd/run.py")
+        print("  python top_amd/run.py" + (" --fsdp" if use_fsdp else ""))
     else:
-        prepare()
-        execute()
+        prepare(need_torch_dist=not use_fsdp)
+        execute_fsdp() if use_fsdp else execute()

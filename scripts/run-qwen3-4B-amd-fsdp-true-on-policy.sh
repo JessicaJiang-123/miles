@@ -1,6 +1,6 @@
 #!/bin/bash
 # Qwen3-4B FSDP + 近似 True On-Policy - AMD GPU 版
-# FA3 不可用，用 flash/flash_attention_2 替代；train_rollout_logprob_abs_diff 可能非严格 0
+# 对照「What True On-Policy Requires」表：AMD 用 aiter（可用但未验证 bitwise determinism）
 
 # for rerun the task
 pkill -9 sglang
@@ -101,29 +101,33 @@ else
    )
 fi
 
-# True On-Policy 参数： deterministic + rl-on-policy-target + flash 替代 fa3
+# True On-Policy 参数：deterministic inference 仅支持 flashinfer/fa3/triton
+#   AMD 已验证：sglang v0.5.8-rocm + --attention-backend triton + --enable-deterministic-inference 可跑
 TRUE_ON_POLICY_ARGS=(
    --sglang-enable-deterministic-inference
    --sglang-rl-on-policy-target fsdp
-   --sglang-attention-backend flash
+   --sglang-attention-backend triton
+   --attn-implementation flash_attention_2
    --deterministic-mode
    --true-on-policy-mode
 )
 
+# ck rmsnorm2d 仅支持 fp16/bf16：graph capture 时 AITER 仍收 fp32，需禁用 CUDA graph（有性能损失）
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.75
+   --sglang-dtype bfloat16
+   --sglang-mem-fraction-static 0.6
+   --sglang-disable-cuda-graph
    --sglang-decode-log-interval 1000
    --sglang-chunked-prefill-size 4096
+   --sglang-enable-metrics
    --sglang-disable-custom-all-reduce
 )
 
-# attn-implementation 与 SGLang flash 对应
 TRAIN_BACKEND_ARGS=(
    --train-backend fsdp
    --update-weight-buffer-size 536870912
    --gradient-checkpointing
-   --attn-implementation flash_attention_2
    --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}'
 )
 
@@ -137,13 +141,14 @@ MISC_ARGS=(
 
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${NUM_GPUS}" --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
-# 无 NVTE_、CUBLAS_；保留 NCCL_ALGO（RCCL 可能兼容）
+# 关闭 AITER：Miles ROCm 镜像默认 SGLANG_USE_AITER=1，其 rmsnorm 仅支持 fp16/bf16 且易收 fp32
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${MILES_ROOT}\",
     \"no_proxy\": \"${no_proxy}\",
     \"MASTER_ADDR\": \"${MASTER_ADDR}\",
-    \"NCCL_ALGO\": \"allreduce:tree\"
+    \"NCCL_ALGO\": \"allreduce:tree\",
+    \"SGLANG_USE_AITER\": \"0\"
   }
 }"
 
