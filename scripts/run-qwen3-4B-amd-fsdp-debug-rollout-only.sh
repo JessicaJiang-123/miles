@@ -1,7 +1,14 @@
 #!/bin/bash
 # Qwen3-4B AMD - debug-rollout-only 模式
 # 只起 SGLang + Router，不训练。用于验证 Miles 起的 SGLang 是否确定性推理。
-# 用法：先跑此脚本，在另一终端运行 scripts/test_miles_sglang_determinism.py 打请求测试。
+#
+# 用法：
+#   终端1: bash scripts/run-qwen3-4B-amd-fsdp-debug-rollout-only.sh
+#   等待看到 ">>> Router is READY! Run..." 后，
+#   终端2: python scripts/test_miles_sglang_determinism.py --host localhost --port 30000 --test-mode single
+#
+# 原理见 scripts/DEBUG_ROLLOUT_ONLY_README.md
+#
 # 参考：run-qwen3-4B-amd-fsdp.sh（基线可跑）
 
 # for rerun the task
@@ -42,7 +49,9 @@ CKPT_ARGS=(
    --save ${BASE_FOLDER}/Qwen3-4B
 )
 
-# 简化：只跑 2 个 rollout，便于快速验证；batch 缩小
+# 跑较多 rollout，留出时间让你在另一终端打请求；batch 缩小加速单次
+# 约 50 个 rollout × 若干秒 ≈ 数分钟，足够运行 test_miles_sglang_determinism.py
+DEBUG_ROLLOUT_NUM=${DEBUG_ROLLOUT_NUM:-50}
 ROLLOUT_ARGS=(
    --prompt-data ${DATA_BASE}/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
@@ -51,7 +60,7 @@ ROLLOUT_ARGS=(
    --rollout-shuffle
    --balance-data
    --rm-type deepscaler
-   --num-rollout 2
+   --num-rollout ${DEBUG_ROLLOUT_NUM}
    --rollout-batch-size 4
    --n-samples-per-prompt 4
    --rollout-max-response-len 256
@@ -106,15 +115,21 @@ TRAIN_BACKEND_ARGS=(
 
 NUM_GPUS=$(echo "${HIP_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
 
+ROUTER_PORT=30000
 MISC_ARGS=(
    --colocate
    --use-fault-tolerance
    --dump-details "${BASE_FOLDER}/dump_details_amd_debug_rollout"
    --debug-rollout-only
-   --sglang-router-port 30000
+   --sglang-router-port ${ROUTER_PORT}
 )
 
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${NUM_GPUS}" --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+echo ""
+echo "=============================================="
+echo "  提交 Ray 任务，等待 Router (port ${ROUTER_PORT}) 就绪..."
+echo "  就绪后会在下方打印测试命令，请在另一终端执行"
+echo "=============================================="
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -123,6 +138,26 @@ RUNTIME_ENV_JSON="{
     \"MASTER_ADDR\": \"${MASTER_ADDR}\"
   }
 }"
+
+# 后台轮询 Router 端口，就绪时打印测试命令（主进程继续跑 job 并显示日志）
+(
+   for i in $(seq 1 90); do
+      if python3 -c "import socket; socket.create_connection(('127.0.0.1',${ROUTER_PORT}), timeout=2)" 2>/dev/null; then
+         echo ""
+         echo "=============================================="
+         echo ">>> Router is READY! Run in another terminal:"
+         echo "    cd ${MILES_ROOT}"
+         echo "    python scripts/test_miles_sglang_determinism.py --host 172.17.0.2 --port ${ROUTER_PORT} --test-mode single"
+         echo "    # Docker 内用 172.17.0.2；若宿主机打请求则用 localhost 或宿主机 IP"
+         echo "=============================================="
+         echo ""
+         break
+      fi
+      sleep 2
+      printf "."
+   done
+) &
+POLL_PID=$!
 
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
@@ -138,3 +173,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    "${PERF_ARGS[@]}" \
    "${SGLANG_ARGS[@]}" \
    "${MISC_ARGS[@]}"
+
+kill ${POLL_PID} 2>/dev/null || true

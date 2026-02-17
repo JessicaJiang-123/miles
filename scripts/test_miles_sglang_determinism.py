@@ -3,8 +3,8 @@
 向 Miles Router 打请求，测试 SGLang 确定性推理。
 用法：Miles 用 --debug-rollout-only 启动后，在另一终端运行此脚本。
 
-  python scripts/test_miles_sglang_determinism.py --host localhost --port 30000 --test-mode single
-  python scripts/test_miles_sglang_determinism.py --host localhost --port 30000 --test-mode prefix
+  python scripts/test_miles_sglang_determinism.py --host 172.17.0.2 --port 30000 --test-mode single
+  # Docker 内 Router 通常监听 172.17.0.2，若 localhost 报 Connection refused 请用 172.17.0.2
 
 参考：sglang.test.test_deterministic，仅保留「看有多少个唯一输出」的逻辑。
 """
@@ -17,10 +17,10 @@ PROMPT = "给我介绍下sglang"
 LONG_PROMPT_PREFIX = "Tell me about Richard Feynman. " * 50  # ~800 chars
 
 
-def send_generate(host, port, text_list, temperature=0.0, sampling_seed=42, max_new_tokens=100):
-    """向 router /generate 发请求，text_list 为 prompt 列表"""
+def send_generate(host, port, text, temperature=0.0, sampling_seed=42, max_new_tokens=100):
+    """向 router /generate 发单条请求，text 为字符串（Miles Router 要求 text 为 string，非 list）"""
     json_data = {
-        "text": text_list,
+        "text": text,
         "sampling_params": {
             "temperature": temperature,
             "max_new_tokens": max_new_tokens,
@@ -33,25 +33,25 @@ def send_generate(host, port, text_list, temperature=0.0, sampling_seed=42, max_
         return None
     ret = resp.json()
     if isinstance(ret, list):
-        return [r["text"] for r in ret]
-    return [ret["text"]]
+        return ret[0]["text"] if ret else ""
+    return ret.get("text", "")
 
 
 def run_single_mode(host, port, n_trials, temperature=0.0):
     """
-    Single 模式：同一 prompt，batch_size 从 1 到 n_trials 各跑一次。
+    Single 模式：同一 prompt 发送 n_trials 次，每次单条请求。
     确定性时，所有输出应完全相同，Unique=1。
     """
-    print(f"\n=== Single 模式 (batch_size 1..{n_trials}) ===")
+    print(f"\n=== Single 模式 ({n_trials} 次单条请求) ===")
     random.seed(42)
     texts = []
-    for bs in range(1, n_trials + 1):
-        out = send_generate(host, port, [PROMPT] * bs, temperature=temperature)
+    for i in range(1, n_trials + 1):
+        out = send_generate(host, port, PROMPT, temperature=temperature)
         if out is None:
             return None
-        t = out[0].replace("\n", " ") if out else ""
+        t = out.replace("\n", " ") if isinstance(out, str) else str(out)
         texts.append(t)
-        print(f"  Trial {bs} (batch_size={bs}): {t[:60]}...")
+        print(f"  Trial {i}: {t[:60]}...")
 
     unique = list(dict.fromkeys(texts))
     n_unique = len(unique)
@@ -60,34 +60,32 @@ def run_single_mode(host, port, n_trials, temperature=0.0):
         print("  -> 通过（所有输出一致）")
     else:
         print(f"  -> 存在 {n_unique} 种不同输出")
-        for i, u in enumerate(unique[:5]):
-            indices = [j + 1 for j, t in enumerate(texts) if t == u]
-            print(f"     [输出{i+1}] 出现在 trial: {indices[:10]}{'...' if len(indices)>10 else ''}")
+        for j, u in enumerate(unique[:5]):
+            indices = [k + 1 for k, t in enumerate(texts) if t == u]
+            print(f"     [输出{j+1}] 出现在 trial: {indices[:10]}{'...' if len(indices)>10 else ''}")
     return n_unique
 
 
 def run_prefix_mode(host, port, n_trials, n_start=1, temperature=0.0):
     """
-    Prefix 模式：不同长度前缀的 prompt，混在一个 batch 里多次发送。
+    Prefix 模式：不同长度前缀的 prompt，每个各发若干次单条请求。
     确定性时，相同 prefix 的输出应完全相同。
     """
-    print(f"\n=== Prefix 模式 (batch_size {n_start}..{n_start+n_trials-1}) ===")
+    print(f"\n=== Prefix 模式 ===")
     len_prefix = [1, 100, 256, 512]
     prompts = [LONG_PROMPT_PREFIX[:l] for l in len_prefix]
     outputs = {i: [] for i in range(len(prompts))}
+    # 每种 prefix 各发 n_trials 次
+    per_prefix = max(1, n_trials // len(prompts))
 
     random.seed(42)
-    for i in range(n_start, n_start + n_trials):
-        batch_size = i
-        sampled = [random.randint(0, len(prompts) - 1) for _ in range(batch_size)]
-        batch_prompts = [prompts[s] for s in sampled]
-
-        out = send_generate(host, port, batch_prompts, temperature=temperature)
-        if out is None:
-            return None
-
-        for idx, s in enumerate(sampled):
-            outputs[s].append(out[idx])
+    for i in range(len(prompts)):
+        for _ in range(per_prefix):
+            out = send_generate(host, port, prompts[i], temperature=temperature)
+            if out is None:
+                return None
+            t = out.replace("\n", " ") if isinstance(out, str) else str(out)
+            outputs[i].append(t)
 
     results = []
     for i in range(len(prompts)):
@@ -103,7 +101,7 @@ def run_prefix_mode(host, port, n_trials, n_start=1, temperature=0.0):
 
 def main():
     p = argparse.ArgumentParser(description="Miles SGLang 确定性推理测试")
-    p.add_argument("--host", default="localhost")
+    p.add_argument("--host", default="172.17.0.2", help="Docker 内 Router 通常监听 172.17.0.2")
     p.add_argument("--port", type=int, default=30000)
     p.add_argument("--test-mode", choices=["single", "prefix"], default="single")
     p.add_argument("--n-trials", type=int, default=15)
