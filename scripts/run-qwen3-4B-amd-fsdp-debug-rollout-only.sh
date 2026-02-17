@@ -95,10 +95,14 @@ OPTIMIZER_ARGS=(
 # 不启用 wandb
 WANDB_ARGS=()
 
-# SGLang 配置：与 run-qwen3-4B-amd-fsdp.sh 一致，暂不加入确定性推理
+# SGLang 配置：加入确定性推理（参考你单独起 SGLang 成功的参数）
+#   --attention-backend triton --enable-deterministic-inference --mem-fraction-static 0.7 --disable-radix-cache
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.75
+   --sglang-attention-backend triton
+   --sglang-enable-deterministic-inference
+   --sglang-mem-fraction-static 0.7
+   --sglang-disable-radix-cache
    --sglang-decode-log-interval 1000
    --sglang-chunked-prefill-size 4096
    --sglang-disable-custom-all-reduce
@@ -131,11 +135,13 @@ echo "  提交 Ray 任务，等待 Router (port ${ROUTER_PORT}) 就绪..."
 echo "  就绪后会在下方打印测试命令，请在另一终端执行"
 echo "=============================================="
 
+# AMD 确定性推理：关闭 AITER（与 run-qwen3-4B-amd-fsdp-true-on-policy.sh 一致）
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${MILES_ROOT}\",
     \"no_proxy\": \"${no_proxy}\",
-    \"MASTER_ADDR\": \"${MASTER_ADDR}\"
+    \"MASTER_ADDR\": \"${MASTER_ADDR}\",
+    \"SGLANG_USE_AITER\": \"0\"
   }
 }"
 
