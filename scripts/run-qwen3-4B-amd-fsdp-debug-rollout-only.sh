@@ -95,10 +95,13 @@ OPTIMIZER_ARGS=(
 # 不启用 wandb
 WANDB_ARGS=()
 
+NUM_GPUS=$(echo "${HIP_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
+
 # SGLang 配置：加入确定性推理（参考你单独起 SGLang 成功的参数）
 #   --attention-backend triton --enable-deterministic-inference --mem-fraction-static 0.7 --disable-radix-cache
+# 单 worker 模式：所有 GPU 给一个 engine，避免多 worker 各自 RNG 导致非确定性（参见 DEBUG_ROLLOUT_ONLY_README）
 SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 2
+   --rollout-num-gpus-per-engine "${NUM_GPUS}"
    --sglang-attention-backend triton
    --sglang-enable-deterministic-inference
    --sglang-mem-fraction-static 0.7
@@ -116,8 +119,6 @@ TRAIN_BACKEND_ARGS=(
    --attn-implementation flash_attention_2
    --train-env-vars '{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}'
 )
-
-NUM_GPUS=$(echo "${HIP_VISIBLE_DEVICES}" | tr ',' '\n' | wc -l)
 
 ROUTER_PORT=30000
 MISC_ARGS=(
