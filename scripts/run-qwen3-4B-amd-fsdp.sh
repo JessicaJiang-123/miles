@@ -107,12 +107,16 @@ else
 fi
 
 # 参考 run-qwen3-4B-fsdp.sh；AMD 加 --sglang-disable-custom-all-reduce
+# AMD 需指定 triton + flash_attention_2，否则 SGLang 默认 fa3 会崩溃
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
    --sglang-mem-fraction-static 0.75
    --sglang-decode-log-interval 1000
    --sglang-chunked-prefill-size 4096
    --sglang-disable-custom-all-reduce
+   --sglang-attention-backend triton
+   --attn-implementation flash_attention_2
+   --sglang-disable-cuda-graph
 )
 
 # 参考 run-qwen3-4B-fsdp.sh + 80B；AMD 用 flash_attention_2
@@ -137,11 +141,14 @@ MISC_ARGS=(
 ray start --head --node-ip-address "${MASTER_ADDR}" --num-gpus "${NUM_GPUS}" --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
 
 # 参考 80B 的 RUNTIME_ENV_JSON；AMD 无 Megatron/NCCL_NVLS/CUDA_DEVICE_MAX_CONNECTIONS
+# AMD+Triton 首次推理 kernel 编译慢，需延长 health check 超时
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${MILES_ROOT}\",
     \"no_proxy\": \"${no_proxy}\",
-    \"MASTER_ADDR\": \"${MASTER_ADDR}\"
+    \"MASTER_ADDR\": \"${MASTER_ADDR}\",
+    \"SGLANG_HEALTH_CHECK_TIMEOUT\": \"120\",
+    \"MILES_SGLANG_HEALTH_TIMEOUT\": \"120\"
   }
 }"
 
