@@ -4,6 +4,26 @@ import types
 import torch
 
 
+_dumper = None
+
+
+def _maybe_dump(name: str, value: torch.Tensor) -> None:
+    """Lazily import sglang dumper and dump a tensor."""
+    global _dumper
+    if _dumper is False:
+        return
+    if _dumper is None:
+        try:
+            _dumper = __import__(
+                "sglang.srt.debug_utils.dumper",
+                fromlist=["dumper"],
+            ).dumper
+        except Exception:
+            _dumper = False
+            return
+    _dumper.dump(name, value)
+
+
 def _is_patchable_attention(module) -> bool:
     return (
         hasattr(module, "q_proj")
@@ -47,9 +67,19 @@ def run_unified_extend(
     return o
 
 
-def apply_sglang_triton_attention_patch(model):
-    """Patch HF attention modules to use the SGLang Triton unified-extend path."""
+def apply_sglang_triton_attention_patch(model, enable_dump=True):
+    """Patch HF attention modules to use the SGLang Triton unified-extend path.
+
+    Sets dump attributes on layer 0 and last layer so that the patched forward
+    can emit debug tensors matching SGLang's dump names.
+    """
     from .models.qwen3 import qwen3_triton_forward
+
+    # Determine num_hidden_layers from config
+    num_hidden_layers = None
+    config = getattr(model, "config", None)
+    if config is not None:
+        num_hidden_layers = getattr(config, "num_hidden_layers", None)
 
     patched = 0
     for _name, module in model.named_modules():
@@ -60,6 +90,20 @@ def apply_sglang_triton_attention_patch(model):
 
         module.forward = types.MethodType(qwen3_triton_forward, module)
         module._sglang_triton_patched = True
-        patched += 1
-    return patched
 
+        # Set dump attributes for layer 0 and last layer
+        if enable_dump:
+            layer_id = getattr(module, "layer_idx", None)
+            if layer_id is not None:
+                is_layer0 = layer_id == 0
+                is_last = (
+                    num_hidden_layers is not None
+                    and layer_id == num_hidden_layers - 1
+                )
+                if is_layer0 or is_last:
+                    module._dump_layer_id = layer_id
+                    module._dump_is_last_layer = is_last
+
+        patched += 1
+
+    return patched
