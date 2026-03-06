@@ -147,12 +147,10 @@ def execute():
         megatron_model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
-            "PYTHONPATH": "/app/sglang/python:/app/true_on_policy/miles:/root/Megatron-LM",
+            "PYTHONPATH": "/data/true_on_policy/sglang/python:/data/true_on_policy/miles:/root/Megatron-LM",
             "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
-            "SGLANG_DUMPER_DIR": "/app/true_on_policy/results/amd_triton_dumps",
+            "SGLANG_DUMPER_DIR": "/data/true_on_policy/results/amd_triton_dumps",
             "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",
-            # Return pre-softmax logits from SGLang so logprob dtype matches training side
-            "SGLANG_RETURN_ORIGINAL_LOGPROB": "1",
         },
     )
 
