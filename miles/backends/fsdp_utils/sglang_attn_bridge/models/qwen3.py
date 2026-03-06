@@ -99,6 +99,19 @@ def qwen3_triton_forward(
     # --- HF original: RoPE ---
     if position_embeddings is not None and APPLY_ROTARY_POS_EMB is not None:
         cos, sin = position_embeddings
+        # Dump cos/sin for rope debugging
+        # HF cos shape: [B, seq, head_dim] (doubled: [cos0..cos_{d/2-1}, cos0..cos_{d/2-1}])
+        # Take first half to match SGLang's [num_tokens, head_dim/2]
+        if layer_id == 0:
+            half_dim = cos.shape[-1] // 2
+            _maybe_dump(
+                "layer0_rope_cos",
+                cos.reshape(-1, cos.shape[-1])[..., :half_dim],
+            )
+            _maybe_dump(
+                "layer0_rope_sin",
+                sin.reshape(-1, sin.shape[-1])[..., :half_dim],
+            )
         q, k = APPLY_ROTARY_POS_EMB(q, k, cos, sin)
 
     # Dump post_rope: [B, num_heads, seq, head_dim] -> [total_tokens, num_heads * head_dim]
