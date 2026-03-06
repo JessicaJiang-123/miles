@@ -14,7 +14,7 @@ MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-0.6B")
 assert MODEL_NAME in {"Qwen3-0.6B", "Qwen3-4B"}
 
 MODE = os.environ.get("MILES_SCRIPT_MODE", "normal")
-assert MODE in {"normal", "debug_minimal", "debug_one_sample"}
+assert MODE in {"normal", "debug_minimal", "debug_one_sample", "debug_long"}
 
 NUM_GPUS = int(os.environ.get("MILES_SCRIPT_NUM_GPUS", "1"))
 
@@ -35,17 +35,16 @@ def execute():
         # Shuffle disabled in debug modes to simplify dump pairing
         f"{'--rollout-shuffle ' if MODE == 'normal' else ''}"
         "--rm-type math "
-        f"--num-rollout {2 if MODE == 'debug_one_sample' else 3000} "
-        f"--rollout-batch-size {1 if MODE == 'debug_one_sample' else 32} "
-        f"--n-samples-per-prompt {1 if MODE == 'debug_one_sample' else 8} "
-        f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 1024} "
+        f"--num-rollout {2 if MODE in ('debug_one_sample', 'debug_long') else 3000} "
+        f"--rollout-batch-size {1 if MODE in ('debug_one_sample', 'debug_long') else 32} "
+        f"--n-samples-per-prompt {1 if MODE in ('debug_one_sample', 'debug_long') else 8} "
+        f"--rollout-max-response-len {2 if MODE == 'debug_one_sample' else 64 if MODE == 'debug_long' else 1024} "
         "--rollout-temperature 1 "
-        "--rollout-top-p 1.0 "
-        "--rollout-top-k 1 "
+        f"{'--rollout-top-p 1.0 --rollout-top-k 1 ' if MODE != 'normal' else ''}"
         # temp remove this to make test easier
         # "--over-sampling-batch-size 64 "
         # "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        f"--global-batch-size {1 if MODE == 'debug_one_sample' else 256} "
+        f"--global-batch-size {1 if MODE in ('debug_one_sample', 'debug_long') else 256} "
     )
 
     eval_args = ""
@@ -84,8 +83,9 @@ def execute():
         "--sglang-decode-log-interval 1000 "
         "--sglang-enable-metrics "
         f"--sglang-mem-fraction-static {0.2 if MODEL_NAME == 'Qwen3-4B' else 0.4} "
-        # Debug: always disable cuda-graph and radix-cache, skip warmup for cleaner dumps
-        f"{'--sglang-disable-cuda-graph --sglang-disable-radix-cache --sglang-warmups 0 ' if _is_debug else ''}"
+        # Disable cuda-graph and radix-cache for deterministic inference alignment
+        "--sglang-disable-cuda-graph --sglang-disable-radix-cache "
+        f"{'--sglang-warmups 0 ' if _is_debug else ''}"
     )
 
     fsdp_args = (
