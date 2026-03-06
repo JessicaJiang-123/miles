@@ -193,6 +193,7 @@ class FSDPTrainRayActor(TrainRayActor):
     def _build_model_with_attn_bridge(self, checkpoint_path: str, init_context):
         """Build HF model and optionally apply Triton attention bridge patch."""
         use_triton_bridge = getattr(self.args, "attn_implementation", None) == "triton"
+        self._use_triton_bridge = use_triton_bridge
         effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
 
         with init_context():
@@ -436,6 +437,14 @@ class FSDPTrainRayActor(TrainRayActor):
             compute_total_fwd_flops=None,
         )
 
+    def _set_attn_implementation(self, model, impl: str):
+        """Switch HF attention implementation on a model.
+
+        HF reads config._attn_implementation on every forward call, so
+        toggling this field is sufficient to switch between backends.
+        """
+        model.config._attn_implementation = impl
+
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, self.parallel_state, rollout_data)
         data_iterator = data_iterator[0]
@@ -444,6 +453,10 @@ class FSDPTrainRayActor(TrainRayActor):
             len(num_microbatches) > 0
         ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
 
+        # Stage 1: compute log probs with triton attention (no_grad, bitwise
+        # aligned with inference).  The sglang_triton kernel has no autograd
+        # backward, but that is fine here because everything runs under
+        # torch.no_grad().
         if self.ref_model is not None:
             ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
             rollout_data.update(ref_results)
@@ -454,6 +467,12 @@ class FSDPTrainRayActor(TrainRayActor):
         compute_advantages_and_returns(self.args, self.parallel_state, rollout_data)
 
         log_rollout_data(rollout_id, self.args, rollout_data, self.parallel_state)
+
+        # Stage 2: training step needs full gradient flow including through
+        # attention.  Switch to eager attention so that q/k/v projections
+        # receive proper gradients via PyTorch autograd.
+        if self._use_triton_bridge:
+            self._set_attn_implementation(self.model, "eager")
 
         with timer("actor_train"):
             data_iterator.reset()
@@ -526,6 +545,10 @@ class FSDPTrainRayActor(TrainRayActor):
                     role="actor",
                     extra_metrics=extra_metrics,
                 )
+
+        # Restore triton attention for the next rollout's log prob computation.
+        if self._use_triton_bridge:
+            self._set_attn_implementation(self.model, "triton")
 
         self.prof.step(rollout_id=rollout_id)
 

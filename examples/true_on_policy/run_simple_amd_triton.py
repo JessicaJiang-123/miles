@@ -110,8 +110,9 @@ def execute():
     # NOTE: --attn-implementation triton activates the SGLang Triton attention bridge
     # (apply_sglang_triton_attention_patch), which uses extend_attention_fwd_unified --
     # the same kernel as the SGLang inference-side Triton backend.
-    # NOTE: Triton bwd is not yet implemented; _compute_log_prob runs under
-    # torch.no_grad() so log-prob comparison works end-to-end without bwd.
+    # The triton kernel is used for log-prob computation (no_grad, bitwise-aligned
+    # with inference), while the training step (loss.backward) automatically falls
+    # back to eager attention for full gradient flow through q/k/v projections.
     true_on_policy_args = (
         "--sglang-enable-deterministic-inference "
         "--sglang-rl-on-policy-target fsdp "
