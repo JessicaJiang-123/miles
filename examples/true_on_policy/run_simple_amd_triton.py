@@ -3,8 +3,8 @@ import sys
 
 
 _MILES_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-if _MILES_REPO_ROOT not in sys.path:
-    sys.path.insert(0, _MILES_REPO_ROOT)
+if str(_MILES_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MILES_REPO_ROOT))
 
 import miles.utils.external_utils.command_utils as U
 
@@ -139,10 +139,10 @@ def execute():
         megatron_model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
-            "PYTHONPATH": "/app/zyjiang/top/sglang/python:/app/zyjiang/top/miles:/app/Megatron-LM",
             **{
                 k: os.environ[k]
                 for k in (
+                    "PYTHONPATH",
                     "CUDA_VISIBLE_DEVICES",
                     "HIP_VISIBLE_DEVICES",
                     "HIP_FORCE_DEV_KERNARG",

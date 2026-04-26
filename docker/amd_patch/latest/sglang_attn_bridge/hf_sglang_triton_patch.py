@@ -2,7 +2,7 @@
 
 Instead of monkey-patching the entire attention forward (qkv proj, norm, rope, o_proj),
 we register a custom attention backend via HF's ALL_ATTENTION_FUNCTIONS. This way HF
-keeps its own qkv_proj, norm, rope, o_proj logic — we ONLY replace the core attention
+keeps its own qkv_proj, norm, rope, o_proj logic; we ONLY replace the core attention
 computation (Q@K^T softmax V) with extend_attention_fwd_unified.
 
 The extend_attention_fwd_unified kernel uses per-request indptrs, which naturally
@@ -21,7 +21,7 @@ class TritonAttnFunction(torch.autograd.Function):
 
     This gives us true on-policy (fwd matches inference exactly) while
     maintaining full gradient flow through q/k/v projections.
-    The backward uses memory-efficient tiled Triton kernels (no S×S materialization).
+    The backward uses memory-efficient tiled Triton kernels (no SxS materialization).
     """
 
     @staticmethod
