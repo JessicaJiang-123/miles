@@ -1,5 +1,10 @@
 import os
+import sys
 
+
+_MILES_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if _MILES_REPO_ROOT not in sys.path:
+    sys.path.insert(0, _MILES_REPO_ROOT)
 
 import miles.utils.external_utils.command_utils as U
 
@@ -90,7 +95,7 @@ def execute():
     #     "--ci-metric-checker-key eval/gsm8k "
     #     "--ci-metric-checker-threshold 0.71 "  # loose threshold at 60 step
     # )
-    ci_args = ""
+    ci_args = "--ci-test "
 
     misc_args = "--actor-num-nodes 1 " f"--actor-num-gpus-per-node {NUM_GPUS} " "--colocate " "--train-backend fsdp "
 
@@ -134,7 +139,20 @@ def execute():
         megatron_model_type=None,
         extra_env_vars={
             **true_on_policy_envs,
-            "PYTHONPATH": "/app/sglang/python:/app/yuzhen1/miles:/root/Megatron-LM",
+            "PYTHONPATH": "/app/zyjiang/top/sglang/python:/app/zyjiang/top/miles:/app/Megatron-LM",
+            **{
+                k: os.environ[k]
+                for k in (
+                    "CUDA_VISIBLE_DEVICES",
+                    "HIP_VISIBLE_DEVICES",
+                    "HIP_FORCE_DEV_KERNARG",
+                    "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES",
+                    "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES",
+                    "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES",
+                    "NVTE_USE_HIPBLASLT",
+                )
+                if k in os.environ
+            },
             "SGLANG_DUMPER_ENABLE": "1" if MODE == "debug_one_sample" else "0",
             "SGLANG_TEMP_UTILS_ENABLE_DEBUG_PRINT": "1" if MODE == "debug_one_sample" else "0",
         },
