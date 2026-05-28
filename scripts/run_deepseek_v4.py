@@ -12,10 +12,11 @@ Adapted from yueming-yuan/miles@deepseek-v4 scripts/run_deepseek_v4.py:
     /sgl-workspace/sglang does NOT know DSv4 yet, and adding it is out of scope for the
     training-only smoke).
 
-Usage (run inside container `miles-hai2`):
-    cd /data/data/hai/miles-dsv4
+Usage (run from any worktree of this repo, host or inside `miles-hai2`):
+    cd /path/to/<worktree>     # e.g. miles-dsv4, miles-faithful, ...
     HF_TOKEN=hf_... python scripts/run_deepseek_v4.py full-train \
         --model-name DeepSeek-V4-Flash-FP8-4layer --num-nodes 1 --num-gpus-per-node 8
+The worktree root is auto-derived from this script's location, so any branch checkout works.
 """
 
 from dataclasses import dataclass
@@ -36,13 +37,25 @@ _MEGATRON_MODEL_TYPE = {
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
 }
 
-# Container path to the injector site dir (this worktree, mounted in miles-hai2).
-TE_INJECT_SITE = "/data/data/hai/miles-dsv4/miles/utils/te_inject_site"
-# Yueming's Megatron-LM fork (deepseek-v4 branch) cloned in host /mnt/data/data/hai;
-# container sees it at /data/data/hai.
+
+def _host_to_container(p: str) -> str:
+    """Translate host /mnt/data/... path to container /data/... path.
+
+    The launcher runs on the host but emits paths consumed by Ray workers inside
+    `miles-hai2`, which mounts /mnt/data -> /data.
+    """
+    return "/data" + p[len("/mnt/data"):] if p.startswith("/mnt/data/") else p
+
+
+# Worktree root (so `miles_plugins.models.deepseek_v4` and our TE injector resolve
+# to whichever worktree this script lives in -- works for miles-dsv4, miles-faithful,
+# or any future branch checkout without code edits).
+_HOST_WORKTREE = str(Path(__file__).resolve().parent.parent)
+WORKTREE_ROOT = _host_to_container(_HOST_WORKTREE)
+TE_INJECT_SITE = f"{WORKTREE_ROOT}/miles/utils/te_inject_site"
+# Yueming's Megatron-LM fork (deepseek-v4 branch); cloned outside any worktree at
+# host /mnt/data/data/hai/yueming-megatron -> container /data/data/hai/yueming-megatron.
 YUEMING_MEGATRON = "/data/data/hai/yueming-megatron"
-# Worktree root (so `miles_plugins.models.deepseek_v4` resolves to OUR copy).
-WORKTREE_ROOT = "/data/data/hai/miles-dsv4"
 
 
 @dataclass
