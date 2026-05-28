@@ -73,18 +73,32 @@ def main(fp8_path, bf16_path):
 
         new_state_dict = {}
         for weight_name, weight in current_state_dict.items():
-            if weight_name.endswith("_scale_inv"):
+            # DSv3 used '<name>_scale_inv', DSv4 uses '<base>.scale' (e.g.
+            # 'layers.3.ffn.experts.0.w1.scale'). Skip both kinds of scale
+            # tensors -- they're consumed by the dequant of the paired weight.
+            if weight_name.endswith("_scale_inv") or weight_name.endswith(".scale"):
                 continue
             elif weight.element_size() == 1:  # FP8 weight
-                scale_inv_name = f"{weight_name}_scale_inv"
-                try:
-                    # Get scale_inv from the correct file
-                    scale_inv = get_tensor(scale_inv_name)
-                    fp8_weight_names.append(weight_name)
-                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
-                except KeyError:
+                # Try DSv3 naming first, then DSv4 (<weight base>.scale).
+                scale_candidates = [
+                    f"{weight_name}_scale_inv",
+                    weight_name.removesuffix(".weight") + ".scale" if weight_name.endswith(".weight") else None,
+                ]
+                scale_inv = None
+                for cand in scale_candidates:
+                    if cand is None:
+                        continue
+                    try:
+                        scale_inv = get_tensor(cand)
+                        break
+                    except KeyError:
+                        pass
+                if scale_inv is None:
                     print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
                     new_state_dict[weight_name] = weight
+                    continue
+                fp8_weight_names.append(weight_name)
+                new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
             else:
                 new_state_dict[weight_name] = weight
 
