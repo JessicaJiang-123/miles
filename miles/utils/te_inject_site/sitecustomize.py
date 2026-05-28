@@ -58,7 +58,7 @@ if os.environ.get("ROCM_TE_BLOCKWISE_INJECT", "0") == "1":
             try:
                 _apply_once()
             except Exception as e:  # pragma: no cover
-                print(f"[sitecustomize] rocm_te_blockwise inject failed: {e}", flush=True)
+                print(f"[sitecustomize] rocm_te_blockwise inject failed: {e}", file=sys.stderr, flush=True)
 
     class _Finder(MetaPathFinder):
         _busy = False
@@ -82,7 +82,7 @@ if os.environ.get("ROCM_TE_BLOCKWISE_INJECT", "0") == "1":
         try:
             _apply_once()
         except Exception as e:
-            print(f"[sitecustomize] rocm_te_blockwise inject (eager) failed: {e}", flush=True)
+            print(f"[sitecustomize] rocm_te_blockwise inject (eager) failed: {e}", file=sys.stderr, flush=True)
     else:
         sys.meta_path.insert(0, _Finder())
 
@@ -97,4 +97,4 @@ if os.environ.get("MILES_DSV4_TRANSFORMERS_SHIM", "0") == "1":
         _mod = _u.module_from_spec(_spec)
         _spec.loader.exec_module(_mod)
     except Exception as _e:  # pragma: no cover
-        print(f"[sitecustomize] dsv4_transformers_shim load failed: {_e}", flush=True)
+        print(f"[sitecustomize] dsv4_transformers_shim load failed: {_e}", file=sys.stderr, flush=True)
