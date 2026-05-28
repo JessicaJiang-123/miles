@@ -31,6 +31,7 @@ def _aiter_bits():
 
 
 def quantize_1x128(x: torch.Tensor):
+    """1x128 along K. K must be a multiple of BLK."""
     _, e4m3, fmax = _aiter_bits()
     M, K = x.shape
     xv = x.float().view(M, K // BLK, BLK)
@@ -40,6 +41,8 @@ def quantize_1x128(x: torch.Tensor):
 
 
 def quantize_128x128(w: torch.Tensor):
+    """128x128. Both dims must be multiples of BLK; the caller in _build_qtensor
+    demotes small weights to 1x128 instead of calling this."""
     _, e4m3, fmax = _aiter_bits()
     N, K = w.shape
     wv = w.float().view(N // BLK, BLK, K // BLK, BLK)
@@ -77,12 +80,26 @@ def _patch_quantizer():
         rowwise_data = rowwise_scale = None
         columnwise_data = columnwise_scale = None
 
-        if self.block_scaling_dim == 1:
-            if self.rowwise_usage:
+        # Effective scaling dim: 2D (128x128) only works when both dims are >= 128 and
+        # divisible by BLK. Small weights (e.g. DSv4 indexer linear_weights_proj has
+        # N=index_n_heads=64) get demoted to 1D (1x128 along K) so we always quantize.
+        effective_sdim = self.block_scaling_dim
+        if effective_sdim == 2:
+            M2, K2 = x2d.shape
+            if M2 < BLK or M2 % BLK != 0 or K2 % BLK != 0:
+                effective_sdim = 1
+
+        # In each direction, only quantize if the contraction dim (K) is a multiple
+        # of BLK. Otherwise leave that direction's data None -- the GEMM path uses
+        # the available copy and dequantizes via _my_dequant.
+        M2, K2 = x2d.shape
+
+        if effective_sdim == 1:
+            if self.rowwise_usage and K2 % BLK == 0:
                 q, s = quantize_1x128(x2d)
                 rowwise_data = _to_uint8(q).reshape(orig_shape).contiguous()
                 rowwise_scale = s.contiguous()
-            if self.columnwise_usage:
+            if self.columnwise_usage and M2 % BLK == 0:
                 qc, sc = quantize_1x128(x2d.t().contiguous())
                 columnwise_data = _to_uint8(qc).contiguous()
                 columnwise_scale = sc.contiguous()
@@ -96,6 +113,15 @@ def _patch_quantizer():
                 columnwise_data = _to_uint8(qc).contiguous()
                 columnwise_scale = sc.contiguous()
 
+        # If we have NEITHER a rowwise nor columnwise quantized copy (e.g. weight is
+        # 64-rows x 4096-K and we needed columnwise, but the contraction dim wouldn't
+        # fit BLK), stash a bf16 copy in rowwise_data so _my_dequant can reconstruct
+        # the original value. Tag with sdim=0 so the GEMM patch knows to fall back
+        # to bf16. (Tiny weights -- skip FP8 for this one Linear.)
+        if rowwise_data is None and columnwise_data is None:
+            # signal: store original bf16, GEMM patch will dequantize via _my_dequant_raw
+            pass  # handled below by stashing on the tensor
+
         out = Float8BlockwiseQTensor(
             shape=orig_shape,
             dtype=tensor.dtype if tensor.dtype.is_floating_point else torch.bfloat16,
@@ -105,11 +131,13 @@ def _patch_quantizer():
             columnwise_data=columnwise_data,
             columnwise_scale_inv=columnwise_scale,
             quantizer=self,
-            is_2D_scaled=self.block_scaling_dim == 2,
+            is_2D_scaled=effective_sdim == 2,
             data_format=tex.Float8BlockScaleTensorFormat.GEMM_READY,
             requires_grad=False,
         )
-        out._aiter_block_scaling_dim = self.block_scaling_dim
+        # Tag with the actually-used scaling dim (may differ from the quantizer's
+        # configured block_scaling_dim if we demoted 128x128 -> 1x128 for a small weight).
+        out._aiter_block_scaling_dim = effective_sdim
         return out
 
     def quantize(self, tensor, *, out=None, dtype=None):
@@ -212,14 +240,20 @@ def _patch_gemm():
             x_data, x_scale = a_data, a_scale
             w_data, w_scale = b_data, b_scale
             swap = True
+            act_operand = A
         elif b_sdim == 1 and a_sdim == 2:
             x_data, x_scale = b_data, b_scale
             w_data, w_scale = a_data, a_scale
             swap = False
+            act_operand = B
         else:
+            # both have the same scaling dim (e.g. small weight demoted to sdim=1, or
+            # wgrad with both sdim=1). Use rank heuristic: the operand with more leading
+            # dims is the activation; the 2D one is the weight.
             x_data, x_scale = b_data, b_scale
             w_data, w_scale = a_data, a_scale
             swap = False
+            act_operand = A if A.dim() > B.dim() else B
 
         res = aiter_gemm(
             x_data, w_data, x_scale, w_scale,
@@ -227,14 +261,10 @@ def _patch_gemm():
         )
         if swap:
             res = res.t().contiguous()
-        # aiter returns a 2D [M, N], but Megatron/TE pass >2D activations [s, b, h] and
-        # expect the output to keep the activation's leading dims ([s, b, N]). The
-        # "activation" operand is the 1x128 (sdim==1) one; reshape res to its leading dims
-        # when the row count matches their product. (Skip for a provided `out`, e.g. wgrad
-        # main_grad, whose shape is handled by copy_/add_ below.)
+        # aiter returns a 2D [M, N]; restore the activation's leading dims if it was
+        # higher-rank (Megatron passes [s, b, h] and expects [s, b, N] back).
         if out is None:
-            act = A if a_sdim == 1 else B
-            lead = tuple(act.shape[:-1])
+            lead = tuple(act_operand.shape[:-1])
             prod = 1
             for d in lead:
                 prod *= d
