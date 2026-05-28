@@ -387,6 +387,15 @@ def apply():
     _patch_gemm()
     _patch_norm()
     _patch_gather()
+    # Disable Megatron's jit_fuser (torch.compile). It decorates the bias-dropout-add and
+    # bias-swiglu fusions; dynamo fake-tensor tracing of those over our aiter blockwise FP8
+    # GEMM output raises a spurious broadcast error. Disabling here (before the fusion
+    # modules import / the model builds) keeps those regions eager. Idempotent + guarded.
+    try:
+        import megatron.core.jit as _mcjit
+        _mcjit.disable_jit_fuser()
+    except Exception:
+        pass
     _APPLIED = True
     import os
     if os.environ.get("RANK", "0") in ("0", ""):
