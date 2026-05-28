@@ -55,7 +55,8 @@ def fake_generate_rollout(
         s.response = "fake response"
         s.response_length = resp_len
         s.reward = float(rng.random())
-        s.loss_mask = [0] * (len(s.tokens) - resp_len) + [1] * resp_len
+        # loss_mask is response-length-only (rollout.py:702 asserts equality).
+        s.loss_mask = [1] * resp_len
         s.status = Sample.Status.COMPLETED
         # Fake rollout log probs (one per response token). Needed by the GRPO loss path
         # (TIS / importance-sampling weight = exp(log_p_train - log_p_rollout)).
