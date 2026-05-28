@@ -306,7 +306,7 @@ def _patch_gemm():
 
 
 def _patch_grouped_gemm():
-    """MoE TEGroupedLinear bf16 fallback for blockwise FP8.
+    """MoE TEGroupedLinear real blockwise FP8 via per-expert aiter loop.
 
     DSv4 has 256 routed experts; the MoE forward goes through TE's GroupedLinear:
 
@@ -315,14 +315,24 @@ def _patch_grouped_gemm():
       2. cpp_extensions.gemm.general_grouped_gemm(weight_list, act_list, out_list, ...)
          -> same error from the per-expert GEMM dispatch.
 
-    Aiter has a fused MoE blockscale GEMM but wiring it through TE's per-expert list
-    signature is fiddly. For the smoke we drop the MoE FP8 to bf16 on BOTH ends:
+    We replace BOTH with our own implementation:
 
-      - split_quantize -> return bf16 splits, skip FP8 quantize.
-      - general_grouped_gemm -> dequantize any Float8BlockwiseQTensor input via
-        _my_dequant, hand the bf16 list to the stock kernel.
+      - split_quantize: split inp by m_splits, call each quantizer.quantize() per chunk
+        -> list[Float8BlockwiseQTensor] with the proper 1x128 / 128x128 scales.
+      - general_grouped_gemm: per-expert loop; for FP8 lists call the already-patched
+        general_gemm (aiter blockwise FP8) on each expert separately. This works for
+        all three layouts:
+          fprop  (TN, single_output=True): A=W[N,K] sd=2, B=X[M,K] sd=1 -> Y=X@W^T
+          dgrad  (NN, single_output=True): A=W[N,K] sd=2, B=dY[M,N] sd=1 -> dX=dY@W
+          wgrad  (NT, single_output=False, per-expert outs): A=dY[M,N], B=X[M,K] both
+                  sd=1 -> dW=dY^T@X. (Dense path's general_gemm already handles the
+                  both-1x128 wgrad via `aiter_gemm` with the two-1x128 codepath.)
 
-    Dense Linear / LayerNormLinear / LayerNormMLP still run blockwise FP8.
+    For experts with zero tokens the chunk is M=0; we skip the GEMM and zero-fill the
+    output slice (or per-expert wgrad chunk).
+
+    This matches the dense path numerically: same aiter blockwise FP8 GEMM, same
+    quantize convention, just per-expert. NO bf16 fallback.
     """
     import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
     from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockQuantizer
@@ -330,16 +340,33 @@ def _patch_grouped_gemm():
         Float8BlockwiseQTensorBase,
     )
     import transformer_engine_torch as tex
+    from transformer_engine_torch import DType as TE_DType
 
     _orig_split_quantize = tex.split_quantize
 
     def split_quantize(inp, m_splits, quantizers):
+        """Per-expert blockwise FP8 quantize.
+
+        Each quantizer is a Float8BlockQuantizer with its own rowwise/columnwise usage
+        flags already configured by TE. We just call quantize() on each chunk.
+        """
         any_blk = any(isinstance(q, Float8BlockQuantizer) for q in quantizers)
         if not any_blk:
             return _orig_split_quantize(inp, m_splits, quantizers)
-        if inp.dtype != torch.bfloat16:
-            inp = inp.to(torch.bfloat16)
-        return list(torch.split(inp.contiguous(), m_splits, dim=0))
+        inp = inp.contiguous()
+        chunks = torch.split(inp, m_splits, dim=0)
+        out = []
+        for chunk, q in zip(chunks, quantizers):
+            if isinstance(q, Float8BlockQuantizer):
+                if chunk.shape[0] == 0:
+                    # zero-token expert: skip FP8, hand back an empty bf16 tensor.
+                    out.append(chunk.to(torch.bfloat16) if chunk.dtype != torch.bfloat16 else chunk)
+                else:
+                    # quantize() routes through our patched _build_qtensor.
+                    out.append(q.quantize(chunk if chunk.dtype == torch.bfloat16 else chunk.to(torch.bfloat16)))
+            else:
+                out.append(chunk)
+        return out
 
     tex.split_quantize = split_quantize
     try:
@@ -352,14 +379,15 @@ def _patch_grouped_gemm():
 
     _orig_grouped_gemm = gemm_mod.general_grouped_gemm
 
-    def _maybe_dequant_list(items):
-        out = []
-        for t in items:
-            if isinstance(t, Float8BlockwiseQTensorBase):
-                out.append(_my_dequant(t))
-            else:
-                out.append(t)
-        return out
+    # One-time log so the smoke run actually proves the MoE FP8 path runs.
+    _logged = {"split": False, "grouped": False}
+
+    def _maybe_log(key, msg):
+        if not _logged[key]:
+            import os as _os
+            if _os.environ.get("RANK", "0") in ("0", ""):
+                print(msg, flush=True)
+            _logged[key] = True
 
     def general_grouped_gemm(
         A, B, out, out_dtype, workspaces, layout="TN", m_splits=None,
@@ -373,13 +401,111 @@ def _patch_grouped_gemm():
                 gelu, grad, accumulate, bias, use_bias,
                 use_split_accumulator, D_dtype, single_output,
             )
-        A_hp = _maybe_dequant_list(A)
-        B_hp = _maybe_dequant_list(B)
-        return _orig_grouped_gemm(
-            A_hp, B_hp, out, out_dtype, workspaces, layout, m_splits,
-            gelu, grad, accumulate, bias, use_bias,
-            use_split_accumulator, D_dtype, single_output,
+
+        _maybe_log(
+            "grouped",
+            f"[rocm_te_blockwise_inject] MoE general_grouped_gemm via aiter blockwise FP8 "
+            f"(layout={layout}, single_output={single_output}, num_gemms={len(A)})",
         )
+
+        # TE's general_grouped_gemm passes a TE_DType for out_dtype; the dense general_gemm
+        # we'll call wants a torch.dtype. Translate.
+        _TE_TO_TORCH = {
+            TE_DType.kFloat32: torch.float32,
+            TE_DType.kFloat16: torch.float16,
+            TE_DType.kBFloat16: torch.bfloat16,
+        }
+        if hasattr(out_dtype, "name") or type(out_dtype).__name__ == "DType":
+            torch_out_dtype = _TE_TO_TORCH.get(out_dtype, torch.bfloat16)
+        else:
+            torch_out_dtype = out_dtype if out_dtype is not None else torch.bfloat16
+
+        num_gemms = len(A)
+        # Determine output behavior:
+        #   - single_output=True (fprop+dgrad): all experts write into out[0], offset by
+        #     m_splits along dim 0.
+        #   - single_output=False (wgrad): out is a list per expert, each shape (N, K).
+        if single_output:
+            assert len(out) == 1
+            big_out = out[0]
+            # Per-expert M offsets for the activation/grad-output dim of `big_out`.
+            offsets = [0]
+            for s in m_splits:
+                offsets.append(offsets[-1] + s)
+        else:
+            big_out = None
+
+        # Per-expert bias-grad accumulator (only used for the wgrad+use_bias path).
+        grad_biases = [None] * num_gemms
+
+        # Iterate experts; A and B are LISTS of per-expert tensors.
+        # We dispatch each pair through the already-patched general_gemm (which does the
+        # actual aiter blockwise FP8 GEMM).
+        from transformer_engine.pytorch.cpp_extensions.gemm import general_gemm
+
+        for i in range(num_gemms):
+            ai = A[i]
+            bi = B[i]
+            # m for this expert: in single_output mode it's the row span of the slice
+            # we'll write; in wgrad mode it's the contraction dim (no output slicing).
+            m_i = m_splits[i] if m_splits is not None else None
+            # Skip zero-token experts. (For wgrad they contribute zero to dW; for fprop
+            # the output slice is empty.)
+            if m_i == 0:
+                if single_output:
+                    pass  # no slice to fill
+                else:
+                    # zero-token wgrad: zero out / accumulate-noop into wgrad target
+                    if accumulate:
+                        pass
+                    else:
+                        out[i].zero_()
+                continue
+
+            # Determine the per-expert output target.
+            if single_output:
+                lo, hi = offsets[i], offsets[i + 1]
+                # For fprop (layout TN) the result row span is [lo, hi); for dgrad (NN)
+                # the result row span is the same since dgrad is split along the M dim.
+                out_i = big_out[lo:hi]
+            else:
+                out_i = out[i]
+
+            # Per-expert bias (use_bias means add bias on fprop; on bwd, compute bias grad).
+            bias_i = None
+            if bias is not None and use_bias and not grad:
+                bias_i = bias[i] if isinstance(bias, (list, tuple)) else None
+
+            # Call the dense-path patched general_gemm. It handles the layout / sdim
+            # extraction / aiter dispatch for fprop / dgrad / wgrad uniformly.
+            _, bias_grad_i, _, _ = general_gemm(
+                ai,
+                bi,
+                workspaces[0] if isinstance(workspaces, (list, tuple)) else workspaces,
+                out_dtype=torch_out_dtype,
+                quantization_params=None,
+                gelu=False,
+                gelu_in=None,
+                alpha=1.0,
+                beta=None,
+                accumulate=accumulate,
+                layout=layout,
+                out=out_i,
+                bias=bias_i,
+                use_split_accumulator=use_split_accumulator,
+                grad=grad,
+                ub=None,
+                ub_type=None,
+                extra_output=None,
+                bulk_overlap=False,
+            )
+            if grad and bias_grad_i is not None:
+                grad_biases[i] = bias_grad_i
+
+        # Return shape matches the stock implementation: (out, bias_or_grad_biases, gelu_input).
+        if grad and use_bias:
+            return out, grad_biases, [None] * num_gemms
+        return out, [None] * num_gemms, [None] * num_gemms
 
     gemm_mod.general_grouped_gemm = general_grouped_gemm
     try:
