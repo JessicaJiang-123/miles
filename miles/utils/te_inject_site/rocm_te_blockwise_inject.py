@@ -275,6 +275,91 @@ def _patch_gemm():
             pass
 
 
+def _patch_grouped_gemm():
+    """MoE TEGroupedLinear bf16 fallback for blockwise FP8.
+
+    DSv4 has 256 routed experts; the MoE forward goes through TE's GroupedLinear:
+
+      1. tex.split_quantize(inp, m_splits, [Float8BlockQuantizer, ...])
+         -> 'Not implemented scaling mode: Invalid Scaling' on ROCm.
+      2. cpp_extensions.gemm.general_grouped_gemm(weight_list, act_list, out_list, ...)
+         -> same error from the per-expert GEMM dispatch.
+
+    Aiter has a fused MoE blockscale GEMM but wiring it through TE's per-expert list
+    signature is fiddly. For the smoke we drop the MoE FP8 to bf16 on BOTH ends:
+
+      - split_quantize -> return bf16 splits, skip FP8 quantize.
+      - general_grouped_gemm -> dequantize any Float8BlockwiseQTensor input via
+        _my_dequant, hand the bf16 list to the stock kernel.
+
+    Dense Linear / LayerNormLinear / LayerNormMLP still run blockwise FP8.
+    """
+    import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockQuantizer
+    from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
+        Float8BlockwiseQTensorBase,
+    )
+    import transformer_engine_torch as tex
+
+    _orig_split_quantize = tex.split_quantize
+
+    def split_quantize(inp, m_splits, quantizers):
+        any_blk = any(isinstance(q, Float8BlockQuantizer) for q in quantizers)
+        if not any_blk:
+            return _orig_split_quantize(inp, m_splits, quantizers)
+        if inp.dtype != torch.bfloat16:
+            inp = inp.to(torch.bfloat16)
+        return list(torch.split(inp.contiguous(), m_splits, dim=0))
+
+    tex.split_quantize = split_quantize
+    try:
+        import transformer_engine.pytorch.module.grouped_linear as _gl
+        # Force rebinding even if already imported, since `tex` is the module object.
+        if hasattr(_gl, "tex"):
+            _gl.tex.split_quantize = split_quantize
+    except Exception:
+        pass
+
+    _orig_grouped_gemm = gemm_mod.general_grouped_gemm
+
+    def _maybe_dequant_list(items):
+        out = []
+        for t in items:
+            if isinstance(t, Float8BlockwiseQTensorBase):
+                out.append(_my_dequant(t))
+            else:
+                out.append(t)
+        return out
+
+    def general_grouped_gemm(
+        A, B, out, out_dtype, workspaces, layout="TN", m_splits=None,
+        gelu=False, grad=False, accumulate=False, bias=None, use_bias=False,
+        use_split_accumulator=False, D_dtype=None, single_output=False,
+    ):
+        any_blk = any(isinstance(t, Float8BlockwiseQTensorBase) for t in (*A, *B))
+        if not any_blk:
+            return _orig_grouped_gemm(
+                A, B, out, out_dtype, workspaces, layout, m_splits,
+                gelu, grad, accumulate, bias, use_bias,
+                use_split_accumulator, D_dtype, single_output,
+            )
+        A_hp = _maybe_dequant_list(A)
+        B_hp = _maybe_dequant_list(B)
+        return _orig_grouped_gemm(
+            A_hp, B_hp, out, out_dtype, workspaces, layout, m_splits,
+            gelu, grad, accumulate, bias, use_bias,
+            use_split_accumulator, D_dtype, single_output,
+        )
+
+    gemm_mod.general_grouped_gemm = general_grouped_gemm
+    try:
+        import transformer_engine.pytorch.module.grouped_linear as _gl
+        if hasattr(_gl, "general_grouped_gemm"):
+            _gl.general_grouped_gemm = general_grouped_gemm
+    except Exception:
+        pass
+
+
 def _patch_norm():
     """Stop the FUSED norm+quantize C++ kernel from being handed a Float8BlockQuantizer.
 
@@ -397,6 +482,7 @@ def apply():
     _tefp8.check_fp8_block_scaling_support = lambda: (True, "")
     _patch_quantizer()
     _patch_gemm()
+    _patch_grouped_gemm()
     _patch_norm()
     _patch_gather()
     # Disable Megatron's jit_fuser (torch.compile). It decorates the bias-dropout-add and
