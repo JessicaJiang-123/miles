@@ -286,9 +286,11 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "ROCM_TE_BLOCKWISE_INJECT": "1",
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        # PYTHONPATH chain: injector -> yueming-megatron (DSv4) -> our worktree root
-        # (so `miles_plugins.models.deepseek_v4` resolves to our copy).
-        "PYTHONPATH": f"{TE_INJECT_SITE}:{args.megatron_path}:{WORKTREE_ROOT}",
+        # PYTHONPATH chain: injector -> our worktree root -> yueming-megatron (DSv4)
+        # (worktree FIRST so its miles/* shadows the editable install at /root/miles,
+        # which is missing DSv4 patches; megatron_path AFTER so we still pick our
+        # miles_plugins.models.deepseek_v4 over yueming's).
+        "PYTHONPATH": f"{TE_INJECT_SITE}:{WORKTREE_ROOT}:{args.megatron_path}",
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_APPLY_CONFIG_BACKUP": "none",
     }
@@ -312,6 +314,10 @@ def _train(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         extra_env_vars=extra_env_vars,
         megatron_path=args.megatron_path,
+        # Use OUR worktree's train.py and miles/* (the installed /root/miles is missing
+        # the DSv4 patches: hf_validate_args intermediate_size skip, --use-indexer-replay
+        # flags, etc). Pinning train_script keeps everything self-consistent.
+        train_script=f"{WORKTREE_ROOT}/train.py",
     )
 
 
