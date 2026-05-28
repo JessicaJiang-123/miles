@@ -368,8 +368,15 @@ def _train(args: ScriptArgs):
                 "SGLANG_OPT_USE_TILELANG_SWA_PREPARE": "false",
                 "SGLANG_OPT_USE_TILELANG_MHC_PRE": "false",
                 "SGLANG_OPT_USE_TILELANG_MHC_POST": "false",
-                "SGLANG_OPT_USE_AITER_MHC_PRE": "true",
-                "SGLANG_OPT_USE_AITER_MHC_POST": "true",
+                # NOTE: miles-hai2's amd-aiter 0.1.11 ships an mhc kernel that
+                # GPU-faults during cuda graph capture (memory access fault inside
+                # /sgl-workspace/aiter/aiter/jit/module_mhc.so:mhc_pre_big_fuse).
+                # Disable the aiter MHC path and fall back to the torch impl
+                # (hc_pre_torch_impl / hc_post_torch_impl) which is slower but
+                # exercises the same forward semantics. Flip these back to
+                # "true" once aiter is upgraded to >= 0.1.14.
+                "SGLANG_OPT_USE_AITER_MHC_PRE": "false",
+                "SGLANG_OPT_USE_AITER_MHC_POST": "false",
                 "SGLANG_OPT_USE_TRITON_SWA_PREPARE": "true",
                 "SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK": "false",
                 "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "false",

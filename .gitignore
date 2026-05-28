@@ -194,3 +194,6 @@ _examples_synced/
 .DS_Store
 
 .humanize/
+
+# GPU coredumps from in-process HIP faults (see ROCM_COREDUMP_*)
+gpucore.*
