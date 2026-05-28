@@ -316,27 +316,29 @@ def _patch_fp8_padding():
     """
     try:
         import transformer_engine.pytorch.module.fp8_padding as _fp8p
+        import transformer_engine.pytorch.module.fp8_unpadding as _fp8up
 
-        _orig_init = _fp8p.Fp8Padding.__init__
+        def _bump(cls):
+            _orig_init = cls.__init__
 
-        def __init__(self, num_gemms, align_size=None):
-            if align_size is None:
-                align_size = 128
-            elif align_size < 128:
-                align_size = 128
-            _orig_init(self, num_gemms, align_size)
+            def __init__(self, num_gemms, align_size=None):
+                if align_size is None or align_size < 128:
+                    align_size = 128
+                _orig_init(self, num_gemms, align_size)
 
-        _fp8p.Fp8Padding.__init__ = __init__
+            cls.__init__ = __init__
 
-        # Also patch the lazy default-detection that runs in forward() the first time.
-        _orig_forward = _fp8p.Fp8Padding.forward
+            _orig_forward = cls.forward
 
-        def forward(self, inp, m_splits):
-            if self.align_size is None or self.align_size < 128:
-                self.align_size = 128
-            return _orig_forward(self, inp, m_splits)
+            def forward(self, *args, **kwargs):
+                if getattr(self, "align_size", None) is None or self.align_size < 128:
+                    self.align_size = 128
+                return _orig_forward(self, *args, **kwargs)
 
-        _fp8p.Fp8Padding.forward = forward
+            cls.forward = forward
+
+        _bump(_fp8p.Fp8Padding)
+        _bump(_fp8up.Fp8Unpadding)
     except Exception:
         pass
 
