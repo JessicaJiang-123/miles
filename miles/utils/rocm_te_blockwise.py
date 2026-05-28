@@ -343,6 +343,61 @@ def _patch_norm():
             pass
 
 
+def _patch_gather():
+    """All-gather blockwise activations (sequence-parallel) in HIGH PRECISION.
+
+    TE routes a Float8BlockwiseQTensor / Float8BlockQuantizer all-gather to
+    _all_gather_fp8_blockwise, which only supports COMPACT data format and raises for our
+    GEMM_READY tensors. We gather in bf16 then re-quantize to GEMM_READY (TE's own
+    high-precision fallback, taken unconditionally for the blockwise recipe).
+    """
+    import transformer_engine.pytorch.distributed as _dist
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockQuantizer
+    from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
+        Float8BlockwiseQTensorBase,
+    )
+    from transformer_engine.pytorch.distributed import get_distributed_world_size
+
+    _orig_gather = _dist.gather_along_first_dim
+
+    def gather_along_first_dim(inp, process_group, async_op=False, quantizer=None):
+        is_blk = isinstance(inp, Float8BlockwiseQTensorBase) or isinstance(
+            quantizer, Float8BlockQuantizer
+        )
+        if not is_blk:
+            return _orig_gather(inp, process_group, async_op, quantizer)
+        world_size = get_distributed_world_size(process_group)
+        hp = inp.dequantize() if isinstance(inp, Float8BlockwiseQTensorBase) else inp
+        if world_size == 1:
+            out_hp = hp
+        else:
+            out_shape = list(hp.size())
+            out_shape[0] *= world_size
+            out_hp = torch.empty(
+                out_shape, dtype=hp.dtype, device=hp.device,
+                memory_format=torch.contiguous_format,
+            )
+            import torch.distributed as _td
+            _td.all_gather_into_tensor(out_hp, hp.contiguous(), group=process_group)
+        if quantizer is not None:
+            return quantizer(out_hp), None
+        return out_hp, None
+
+    _dist.gather_along_first_dim = gather_along_first_dim
+    for modname in (
+        "transformer_engine.pytorch.module.layernorm_linear",
+        "transformer_engine.pytorch.module.layernorm_mlp",
+        "transformer_engine.pytorch.module.linear",
+    ):
+        try:
+            import importlib
+            m = importlib.import_module(modname)
+            if hasattr(m, "gather_along_first_dim"):
+                m.gather_along_first_dim = gather_along_first_dim
+        except Exception:
+            pass
+
+
 def enable() -> bool:
     """Idempotently route ROCm/TE blockwise FP8 through aiter. Call before building TE modules."""
     global _ENABLED
@@ -354,5 +409,6 @@ def enable() -> bool:
     _patch_quantizer()
     _patch_gemm()
     _patch_norm()
+    _patch_gather()
     _ENABLED = True
     return True
