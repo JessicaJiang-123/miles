@@ -305,6 +305,42 @@ def _patch_gemm():
             pass
 
 
+def _patch_fp8_padding():
+    """Force MoE per-expert token-count alignment to 128 for blockwise FP8.
+
+    Fp8Padding defaults to align_size=16 (the non-MXFP8 default), but our
+    blockwise quantize needs M % 128 == 0 to build columnwise data (the wgrad
+    needs both rowwise and columnwise tensors). Without 128-alignment,
+    `update_usage(columnwise=True)` post-fprop hits 'Cannot update to columnwise
+    usage' because columnwise_data is None. Bump align_size to 128.
+    """
+    try:
+        import transformer_engine.pytorch.module.fp8_padding as _fp8p
+
+        _orig_init = _fp8p.Fp8Padding.__init__
+
+        def __init__(self, num_gemms, align_size=None):
+            if align_size is None:
+                align_size = 128
+            elif align_size < 128:
+                align_size = 128
+            _orig_init(self, num_gemms, align_size)
+
+        _fp8p.Fp8Padding.__init__ = __init__
+
+        # Also patch the lazy default-detection that runs in forward() the first time.
+        _orig_forward = _fp8p.Fp8Padding.forward
+
+        def forward(self, inp, m_splits):
+            if self.align_size is None or self.align_size < 128:
+                self.align_size = 128
+            return _orig_forward(self, inp, m_splits)
+
+        _fp8p.Fp8Padding.forward = forward
+    except Exception:
+        pass
+
+
 def _patch_grouped_gemm():
     """MoE TEGroupedLinear real blockwise FP8 via per-expert aiter loop.
 
@@ -638,6 +674,7 @@ def apply():
     _tefp8.check_fp8_block_scaling_support = lambda: (True, "")
     _patch_quantizer()
     _patch_gemm()
+    _patch_fp8_padding()
     _patch_grouped_gemm()
     _patch_norm()
     _patch_gather()
