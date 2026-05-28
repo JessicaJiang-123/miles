@@ -294,6 +294,14 @@ def _train(args: ScriptArgs):
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_APPLY_CONFIG_BACKUP": "none",
     }
+    # Opt-in: forward MoE through aiter's fused fmoe_fp8_blockscale_g1u1 (one launch
+    # for fc1+swiglu+fc2 + routing) instead of the per-expert grouped-GEMM loop.
+    # Backward stays on the per-expert path. See miles/utils/te_inject_site/
+    # rocm_te_blockwise_inject.py:_patch_megatron_te_grouped_mlp_fmoe for details.
+    # Propagate the host env so users can flip it on without editing this file.
+    import os as _os
+    if _os.environ.get("ROCM_FMOE_FPROP", "0") == "1":
+        extra_env_vars["ROCM_FMOE_FPROP"] = "1"
 
     train_args = (
         f"{ckpt_args} "
