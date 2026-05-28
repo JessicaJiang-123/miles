@@ -56,6 +56,12 @@ TE_INJECT_SITE = f"{WORKTREE_ROOT}/miles/utils/te_inject_site"
 # Yueming's Megatron-LM fork (deepseek-v4 branch); cloned outside any worktree at
 # host /mnt/data/data/hai/yueming-megatron -> container /data/data/hai/yueming-megatron.
 YUEMING_MEGATRON = "/data/data/hai/yueming-megatron"
+# Yueming's sglang fork (deepseek_v4 branch). Cloned at host
+# /mnt/data/data/hai/yueming-sglang -> container /data/data/hai/yueming-sglang.
+# Python layer only; we keep miles-hai2's container-installed sgl_kernel/aiter as-is
+# (AMD-native compiled extensions), and PYTHONPATH-prepend yueming's Python so DSv4
+# model + config + sites load.
+YUEMING_SGLANG_PY = "/data/data/hai/yueming-sglang/python"
 
 
 @dataclass
@@ -77,6 +83,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # debug configs
     skip_saving: bool = True
     extra_args: str = ""
+    # Flip to True to use REAL sglang DSv4 rollout (yueming-sglang prepended on PYTHONPATH),
+    # instead of miles.rollout.fake_rollout.fake_generate_rollout. Required for any
+    # convergence run, and for surfacing real-rollout-only bugs (Megatron->sglang weight
+    # bridge, etc) that fake_rollout hid.
+    real_rollout: bool = False
 
     def __post_init__(self):
         if not self.model_org:
@@ -272,20 +283,29 @@ def _train(args: ScriptArgs):
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
         "--colocate "
-        # ROUTINE: bypass rollout (sglang on this image doesn't know DSv4):
+    )
+
+    if args.real_rollout:
+        # REAL sglang rollout (via yueming-sglang on PYTHONPATH). The default
+        # --rollout-function-path is miles.rollout.sglang_rollout.generate_rollout
+        # so no explicit override needed.
+        pass
+    else:
+        # ROUTINE / fallback: bypass sglang entirely.
         # --debug-train-only skips sglang server init in rollout.py:371; the
         # custom rollout-function below returns synthetic dummy samples so
         # _get_rollout_data still produces a batch and the Megatron train loop
         # has data to train on. This is a TRAINING smoke -- responses are
         # meaningless, but every FP8 GEMM/quant path is exercised.
-        "--debug-train-only "
-        "--rollout-function-path miles.rollout.fake_rollout.fake_generate_rollout "
-        # Use the rollout-logprobs (which our fake rollout fills) as the
-        # 'old' logprobs in the GRPO loss so the importance-sampling term is
-        # well-defined even when the training forward log-probs are at a
-        # different shape than what the policy_loss expects from a real rollout.
-        "--use-rollout-logprobs "
-    )
+        misc_args += (
+            "--debug-train-only "
+            "--rollout-function-path miles.rollout.fake_rollout.fake_generate_rollout "
+            # Use the rollout-logprobs (which our fake rollout fills) as the
+            # 'old' logprobs in the GRPO loss so the importance-sampling term is
+            # well-defined even when the training forward log-probs are at a
+            # different shape than what the policy_loss expects from a real rollout.
+            "--use-rollout-logprobs "
+        )
 
     # Blockwise FP8 training via our aiter-backed TE patch.
     misc_args += (
@@ -296,17 +316,34 @@ def _train(args: ScriptArgs):
         # NO --fp8-param-gather (asserted to require delayed recipe).
     )
 
+    # PYTHONPATH chain: injector -> our worktree root -> yueming-megatron (DSv4)
+    # -> [optionally] yueming-sglang (DSv4 model + configs) for real rollout.
+    # (worktree FIRST so its miles/* shadows the editable install at /root/miles,
+    # which is missing DSv4 patches; megatron_path AFTER so we still pick our
+    # miles_plugins.models.deepseek_v4 over yueming's.)
+    pythonpath = f"{TE_INJECT_SITE}:{WORKTREE_ROOT}:{args.megatron_path}"
+    if args.real_rollout:
+        # Prepend yueming-sglang AFTER the injector/worktree but BEFORE any system
+        # site-packages so the DSv4 model + configs override the installed
+        # /sgl-workspace/sglang (which lacks DSv4). Container-installed sgl_kernel,
+        # aiter, transformers stay as-is (AMD-native compiled extensions).
+        pythonpath = f"{TE_INJECT_SITE}:{WORKTREE_ROOT}:{args.megatron_path}:{YUEMING_SGLANG_PY}"
+
     extra_env_vars = {
         "ROCM_TE_BLOCKWISE_INJECT": "1",
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-        # PYTHONPATH chain: injector -> our worktree root -> yueming-megatron (DSv4)
-        # (worktree FIRST so its miles/* shadows the editable install at /root/miles,
-        # which is missing DSv4 patches; megatron_path AFTER so we still pick our
-        # miles_plugins.models.deepseek_v4 over yueming's).
-        "PYTHONPATH": f"{TE_INJECT_SITE}:{WORKTREE_ROOT}:{args.megatron_path}",
+        "PYTHONPATH": pythonpath,
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
+        # yueming-sglang defaults to SGLANG_APPLY_CONFIG_BACKUP=auto, which loads a
+        # hardcoded 43-layer config; that breaks our 4-layer prune. Force "none" so
+        # sglang reads the on-disk config.json.
         "SGLANG_APPLY_CONFIG_BACKUP": "none",
     }
+    if args.real_rollout:
+        # Enable the transformers 5.x rope_parameters -> rope_theta backfill so
+        # yueming-sglang's deepseek_v4 model can read config.rope_theta.
+        # (See miles/utils/te_inject_site/dsv4_transformers_shim.py.)
+        extra_env_vars["MILES_DSV4_TRANSFORMERS_SHIM"] = "1"
     # Opt-in: forward MoE through aiter's fused fmoe_fp8_blockscale_g1u1 (one launch
     # for fc1+swiglu+fc2 + routing) instead of the per-expert grouped-GEMM loop.
     # Backward stays on the per-expert path. See miles/utils/te_inject_site/
