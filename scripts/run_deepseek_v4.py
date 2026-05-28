@@ -344,6 +344,43 @@ def _train(args: ScriptArgs):
         # yueming-sglang's deepseek_v4 model can read config.rope_theta.
         # (See miles/utils/te_inject_site/dsv4_transformers_shim.py.)
         extra_env_vars["MILES_DSV4_TRANSFORMERS_SHIM"] = "1"
+        # DSv4 sglang serve env vars (mirrors yueming-sglang/python/run_dsv4.sh):
+        # these route DSv4 attention kernels to the ROCm/aiter/Triton paths
+        # instead of NV-only CUDA JITs (no deep_gemm, no cuda_runtime.h, etc).
+        extra_env_vars.update(
+            {
+                "SGLANG_USE_AITER": "1",
+                "SGLANG_USE_ROCM700A": "1",
+                # Skip deep_gemm-based paged MQA logits metadata (HIP path
+                # uses aiter's deepgemm_fp8_paged_mqa_logits instead, no
+                # deep_gemm package needed).
+                "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
+                # Force HIP-friendly attention backend & helper kernels.
+                "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
+                "SGLANG_TOPK_TRANSFORM_512_TORCH": "0",
+                "SGLANG_OPT_USE_FUSED_STORE_CACHE": "true",
+                "SGLANG_OPT_USE_OVERLAP_STORE_CACHE": "false",
+                "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
+                "SGLANG_OPT_USE_FUSED_HASH_TOPK": "true",
+                "SGLANG_OPT_USE_FUSED_PAGED_COMPRESS": "true",
+                "SGLANG_OPT_USE_OLD_COMPRESSOR": "false",
+                "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
+                "SGLANG_OPT_USE_TILELANG_SWA_PREPARE": "false",
+                "SGLANG_OPT_USE_TILELANG_MHC_PRE": "false",
+                "SGLANG_OPT_USE_TILELANG_MHC_POST": "false",
+                "SGLANG_OPT_USE_AITER_MHC_PRE": "true",
+                "SGLANG_OPT_USE_AITER_MHC_POST": "true",
+                "SGLANG_OPT_USE_TRITON_SWA_PREPARE": "true",
+                "SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK": "false",
+                "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "false",
+                "SGLANG_OPT_DPSK_V4_RADIX": "1",
+                "SGLANG_OPT_FUSE_WQA_WKV": "true",
+                "SGLANG_FORCE_TRITON_MOE_FP8": "0",
+                "SGLANG_ENABLE_THINKING": "1",
+                "SGLANG_REASONING_EFFORT": "max",
+                "AITER_BF16_FP8_MOE_BOUND": "1",
+            }
+        )
     # Opt-in: forward MoE through aiter's fused fmoe_fp8_blockscale_g1u1 (one launch
     # for fc1+swiglu+fc2 + routing) instead of the per-expert grouped-GEMM loop.
     # Backward stays on the per-expert path. See miles/utils/te_inject_site/
