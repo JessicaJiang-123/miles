@@ -33,42 +33,42 @@ def fake_generate_rollout(
 
     rng = random.Random(rollout_id)
 
-    # Pull a batch of prompts from the data source (this works without sglang).
-    target_num = args.rollout_batch_size * args.n_samples_per_prompt
-    samples = []
-    while len(samples) < target_num:
-        batch = data_source.get_samples(args.rollout_batch_size)
-        for proto in batch:
-            for _ in range(args.n_samples_per_prompt):
-                # Copy the prompt fields, fake a short response.
-                if hasattr(proto, "to_dict"):
-                    s = Sample.from_dict(proto.to_dict())
-                else:
-                    # last resort: shallow copy
-                    s = proto
-                # Vocab id range: assume 0..127999 is safe for any DeepSeek tokenizer.
-                resp_len = min(16, max(4, args.rollout_max_response_len // 4))
-                fake_tokens = [rng.randint(1000, 10000) for _ in range(resp_len)]
-                s.tokens = list(s.tokens) + fake_tokens
-                s.response = "fake response"
-                s.response_length = resp_len
-                s.reward = float(rng.random())
-                s.loss_mask = [0] * (len(s.tokens) - resp_len) + [1] * resp_len
-                s.status = Sample.Status.COMPLETED
-                # Ensure index/group_index are set so downstream don't crash.
-                if s.index is None:
-                    s.index = len(samples)
+    def _fake_one(proto: Sample) -> Sample:
+        if hasattr(proto, "to_dict"):
+            s = Sample.from_dict(proto.to_dict())
+        else:
+            s = proto
+        resp_len = min(16, max(4, args.rollout_max_response_len // 4))
+        fake_tokens = [rng.randint(1000, 10000) for _ in range(resp_len)]
+        s.tokens = list(s.tokens) + fake_tokens
+        s.response = "fake response"
+        s.response_length = resp_len
+        s.reward = float(rng.random())
+        s.loss_mask = [0] * (len(s.tokens) - resp_len) + [1] * resp_len
+        s.status = Sample.Status.COMPLETED
+        return s
+
+    # data_source.get_samples returns list[list[Sample]] (one inner list per prompt-group,
+    # with n_samples_per_prompt entries each).
+    target_groups = args.rollout_batch_size
+    groups: list[list[Sample]] = []
+    while len(groups) < target_groups:
+        batch = data_source.get_samples(target_groups - len(groups))
+        for group in batch:
+            faked_group = [_fake_one(s) for s in group]
+            for j, s in enumerate(faked_group):
                 if s.group_index is None:
-                    s.group_index = len(samples) // args.n_samples_per_prompt
-                samples.append(s)
-                if len(samples) >= target_num:
-                    break
-            if len(samples) >= target_num:
+                    s.group_index = len(groups)
+                if s.index is None:
+                    s.index = j
+            groups.append(faked_group)
+            if len(groups) >= target_groups:
                 break
 
     metrics: dict[str, Any] = {
         "fake_rollout": True,
         "fake_rollout_id": rollout_id,
-        "fake_rollout_size": len(samples),
+        "fake_rollout_groups": len(groups),
+        "fake_rollout_total_samples": sum(len(g) for g in groups),
     }
-    return RolloutFnTrainOutput(samples=samples, metrics=metrics)
+    return RolloutFnTrainOutput(samples=groups, metrics=metrics)

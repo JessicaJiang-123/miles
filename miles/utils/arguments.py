@@ -1052,6 +1052,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The routing replay technique from https://arxiv.org/abs/2507.18071",
             )
             parser.add_argument(
+                "--use-indexer-replay",
+                action="store_true",
+                default=False,
+                help="DSv4 indexer replay (paired with IndexerReplayManager).",
+            )
+            parser.add_argument(
+                "--use-rollout-indexer-replay",
+                action="store_true",
+                default=False,
+                help="Replay indexer topk from rollout during training for layers with indexer.",
+            )
+            parser.add_argument(
                 "--use-rollout-routing-replay",
                 action="store_true",
                 default=False,
@@ -2283,6 +2295,14 @@ def hf_validate_args(args, hf_config):
     ]:
         # FIXME: Qwen3.5 transfomers has bug.
         if getattr(hf_config, "model_type", "") == "qwen3_5_moe_text" and hf_config_name == "intermediate_size":
+            continue
+        # DeepSeek V3/V4 MoE: hf_config.intermediate_size is the dense FFN width;
+        # megatron --ffn-hidden-size for an all-MoE model is the per-expert width
+        # (moe_ffn_hidden_size). They don't match; skip the check.
+        if (
+            getattr(hf_config, "model_type", "") in ("deepseek_v3", "deepseek_v4", "deepseek_ref")
+            and hf_config_name == "intermediate_size"
+        ):
             continue
         if hasattr(hf_config, hf_config_name):
             if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):

@@ -22,7 +22,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import StrEnum
+try:
+    from enum import StrEnum  # Python >= 3.11
+except ImportError:  # pragma: no cover
+    # Python 3.10 compat: define a StrEnum drop-in.
+    from enum import Enum
+
+    class StrEnum(str, Enum):  # type: ignore[no-redef]
+        def __str__(self) -> str:
+            return str(self.value)
 from pathlib import Path
 from typing import Any
 

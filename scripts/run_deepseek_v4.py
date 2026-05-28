@@ -87,15 +87,25 @@ def _hf_checkpoint_path(args: ScriptArgs) -> str:
 
 
 def _patch_4layer_model_type(args: ScriptArgs):
-    """HF transformers doesn't know `deepseek_v4`; rewrite the 4-layer config's model_type
-    to `deepseek_ref` (mirrors yueming's run_deepseek_v4._patch_4layer_model_type)."""
+    """HF transformers doesn't know `deepseek_v4`; rewrite the 4-layer config's
+    model_type directly to `deepseek_v3`. transformers' DeepseekV3Config preserves
+    all unknown extra fields (hc_mult, compress_ratios, ...) as plain attributes,
+    so our mbridge ``_patched_from_config`` keys on ``hasattr(hf_config, 'hc_mult')``
+    and still picks DeepseekV4Bridge. Yueming's pipeline rewrites to `deepseek_ref`
+    and then relies on sglang's `_load_deepseek_temp_model` to substitute the
+    config at load time; we don't have that path (sglang in this image doesn't
+    know DSv4), so we skip the intermediate.
+    """
     cfg = Path(_hf_checkpoint_path(args)) / "config.json"
     if not cfg.exists():
         return
     text = cfg.read_text()
-    if '"model_type": "deepseek_v4"' in text:
-        cfg.write_text(text.replace('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'))
-        print(f"[patch] {cfg}: model_type deepseek_v4 -> deepseek_ref")
+    for old in ('"model_type": "deepseek_v4"', '"model_type": "deepseek_ref"'):
+        if old in text:
+            text = text.replace(old, '"model_type": "deepseek_v3"')
+            cfg.write_text(text)
+            print(f"[patch] {cfg}: model_type -> deepseek_v3")
+            break
 
 
 def _prepare_download(args: ScriptArgs):
@@ -160,8 +170,9 @@ def _train(args: ScriptArgs):
     _patch_4layer_model_type(args)
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
+    hf_checkpoint = args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
     ckpt_args = (
-        f"--hf-checkpoint {args.hf_checkpoint} "
+        f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load {args.model_dir}/{args.torch_dist_name} "
     )
     if not args.skip_saving:
@@ -172,12 +183,13 @@ def _train(args: ScriptArgs):
             "--save-retain-interval 20 "
         )
 
-    # Rollout args are required by the parser but rollout is bypassed via --debug-train-only.
+    # Rollout args are required by the parser. We override the real rollout function
+    # with miles.rollout.fake_rollout.fake_generate_rollout (set in misc_args below).
+    # No --apply-chat-template: the Pinaster DSv4 tokenizer doesn't ship one.
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
-        "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
         "--num-rollout 3 "
@@ -230,6 +242,7 @@ def _train(args: ScriptArgs):
         f"--sglang-tp-size {args.num_gpus_per_node} "
         f"--sglang-dp-size {args.num_gpus_per_node} "
         f"--sglang-ep-size {args.num_gpus_per_node} "
+        "--sglang-enable-dp-attention "  # sglang_dp_size > 1 requires this
         "--sglang-chunked-prefill-size 8192 "
         "--sglang-mem-fraction-static 0.7 "
     )
