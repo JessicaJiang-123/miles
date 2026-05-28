@@ -246,8 +246,14 @@ def _train(args: ScriptArgs):
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
         "--colocate "
-        # ROUTINE: bypass rollout (sglang on this image doesn't know DSv4).
+        # ROUTINE: bypass rollout (sglang on this image doesn't know DSv4):
+        # --debug-train-only skips sglang server init in rollout.py:371; the
+        # custom rollout-function below returns synthetic dummy samples so
+        # _get_rollout_data still produces a batch and the Megatron train loop
+        # has data to train on. This is a TRAINING smoke -- responses are
+        # meaningless, but every FP8 GEMM/quant path is exercised.
         "--debug-train-only "
+        "--rollout-function-path miles.rollout.fake_rollout.fake_generate_rollout "
     )
 
     # Blockwise FP8 training via our aiter-backed TE patch.
