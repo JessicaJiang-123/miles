@@ -99,19 +99,18 @@ def _patch_quantizer():
                 q, s = quantize_1x128(x2d)
                 rowwise_data = _to_uint8(q).reshape(orig_shape).contiguous()
                 rowwise_scale = s.contiguous()
-            if self.columnwise_usage:
-                # Quantize columnwise 1x128 along the new K-dim (which is original M).
-                # If M doesn't divide 128, pad the columnwise input to next multiple
-                # with zeros so we always produce a valid columnwise blob. The
-                # wgrad/dgrad consumers either don't care (zeros contribute zero) or
-                # see the padded M and operate on it; the rest of TE's update_usage
-                # path requires SOME columnwise data even if it isn't strictly the
-                # "1x128 along M" recipe.
+            # Always produce columnwise data for the 1D-scaled path. TE may later
+            # call update_usage(columnwise_usage=True) (e.g. linear.py:402 to keep
+            # the FP8 weight transpose cache for dgrad) and asserts both copies
+            # present, even when the *initial* columnwise_usage flag was False.
+            # Zero-pad M up to BLK so we always produce a valid blob; _extract /
+            # _my_dequant trim the padding back via _aiter_columnwise_M.
+            if K2 % BLK == 0:
                 xT = x2d.t().contiguous()  # [K, M]
-                K_, M_ = xT.shape  # K_ == K2, M_ == M2
+                K_, M_ = xT.shape
                 if M_ % BLK != 0:
                     pad = BLK - (M_ % BLK)
-                    xT = torch.nn.functional.pad(xT, (0, pad))  # zero-pad M dim
+                    xT = torch.nn.functional.pad(xT, (0, pad))
                 qc, sc = quantize_1x128(xT)
                 columnwise_data = _to_uint8(qc).contiguous()
                 columnwise_scale = sc.contiguous()
@@ -120,10 +119,10 @@ def _patch_quantizer():
                 q, s = quantize_128x128(x2d)
                 rowwise_data = _to_uint8(q).reshape(orig_shape).contiguous()
                 rowwise_scale = s.contiguous()
-            if self.columnwise_usage:
-                qc, sc = quantize_128x128(x2d.t().contiguous())
-                columnwise_data = _to_uint8(qc).contiguous()
-                columnwise_scale = sc.contiguous()
+            # Always produce columnwise data (see comment above).
+            qc, sc = quantize_128x128(x2d.t().contiguous())
+            columnwise_data = _to_uint8(qc).contiguous()
+            columnwise_scale = sc.contiguous()
 
         # If we have NEITHER a rowwise nor columnwise quantized copy (e.g. weight is
         # 64-rows x 4096-K and we needed columnwise, but the contraction dim wouldn't
