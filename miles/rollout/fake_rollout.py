@@ -46,6 +46,10 @@ def fake_generate_rollout(
         s.reward = float(rng.random())
         s.loss_mask = [0] * (len(s.tokens) - resp_len) + [1] * resp_len
         s.status = Sample.Status.COMPLETED
+        # Fake rollout log probs (one per response token). Needed by the GRPO loss path
+        # (TIS / importance-sampling weight = exp(log_p_train - log_p_rollout)).
+        # We don't have a real sampling distribution, so just zeros (i.e. "uniform" logprob).
+        s.rollout_log_probs = [0.0] * resp_len
         return s
 
     # data_source.get_samples returns list[list[Sample]] (one inner list per prompt-group,

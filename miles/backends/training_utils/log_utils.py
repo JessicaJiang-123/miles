@@ -142,6 +142,12 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         "values",
                         "entropy",
                     ]:
+                        # Guard: if val ended up empty (e.g. under a synthetic / debug rollout
+                        # whose response_lengths don't line up with what Megatron returned for
+                        # the per-sample log-probs), skip the per-sample mean -- nothing
+                        # meaningful to log.
+                        if val.numel() == 0 or val.size(0) != sum(response_lengths):
+                            continue
                         sum_of_sample_mean = get_sum_of_sample_mean(
                             total_lengths,
                             response_lengths,

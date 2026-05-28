@@ -267,6 +267,11 @@ def _train(args: ScriptArgs):
         # meaningless, but every FP8 GEMM/quant path is exercised.
         "--debug-train-only "
         "--rollout-function-path miles.rollout.fake_rollout.fake_generate_rollout "
+        # Use the rollout-logprobs (which our fake rollout fills) as the
+        # 'old' logprobs in the GRPO loss so the importance-sampling term is
+        # well-defined even when the training forward log-probs are at a
+        # different shape than what the policy_loss expects from a real rollout.
+        "--use-rollout-logprobs "
     )
 
     # Blockwise FP8 training via our aiter-backed TE patch.
