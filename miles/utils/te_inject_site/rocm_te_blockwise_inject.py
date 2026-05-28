@@ -372,18 +372,17 @@ def _patch_gather():
         return out_hp, None
 
     _dist.gather_along_first_dim = gather_along_first_dim
-    for modname in (
-        "transformer_engine.pytorch.module.layernorm_linear",
-        "transformer_engine.pytorch.module.layernorm_mlp",
-        "transformer_engine.pytorch.module.linear",
-    ):
-        try:
-            import importlib
-            m = importlib.import_module(modname)
-            if hasattr(m, "gather_along_first_dim"):
-                m.gather_along_first_dim = gather_along_first_dim
-        except Exception:
-            pass
+    # Several TE modules do `from ..distributed import gather_along_first_dim` (binding it at
+    # import time), so patching the distributed module attr alone is not enough -- rebind in
+    # every already-imported module that has the name.
+    import sys as _sys
+    for _name, _mod in list(_sys.modules.items()):
+        if _name.startswith("transformer_engine.pytorch") and _mod is not None:
+            if getattr(_mod, "gather_along_first_dim", None) is _orig_gather:
+                try:
+                    _mod.gather_along_first_dim = gather_along_first_dim
+                except Exception:
+                    pass
 
 
 def apply():
