@@ -121,9 +121,24 @@ def _arm_pdl_shim_on_rocm():
     def _patch(mod):
         try:
             mod.is_arch_support_pdl = lambda: False
-            _log("sglang.jit_kernel.utils.is_arch_support_pdl forced to False (ROCm)")
+            # (1) Strip NVCC-only flags from DEFAULT_CUDA_CFLAGS so hipcc/clang++ on ROCm
+            #     doesn't choke on '--expt-relaxed-constexpr' (NVCC-only).
+            nvcc_only = ("--expt-relaxed-constexpr",)
+            # (2) Inject -DUSE_ROCM so the .cuh headers (utils.cuh, atomic.cuh) take their
+            #     ROCm branches instead of trying to include <cuda_bf16.h> / <cuda_fp16.h>.
+            rocm_extras = ["-DUSE_ROCM"]
+            for attr in ("DEFAULT_CUDA_CFLAGS",):
+                lst = getattr(mod, attr, None)
+                if isinstance(lst, list):
+                    stripped = [f for f in lst if f not in nvcc_only]
+                    for extra in rocm_extras:
+                        if extra not in stripped:
+                            stripped.append(extra)
+                    if stripped != lst:
+                        lst[:] = stripped  # in-place so import-time captures see the new list
+            _log("sglang.jit_kernel.utils patched (PDL=False; stripped NVCC flags; added -DUSE_ROCM)")
         except Exception as exc:  # pragma: no cover
-            _log(f"PDL patch failed: {exc}")
+            _log(f"PDL/cflags patch failed: {exc}")
 
     if _TARGET in sys.modules:
         _patch(sys.modules[_TARGET])
