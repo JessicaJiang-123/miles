@@ -350,26 +350,59 @@ def _patch_gemm():
 def _patch_grouped_gemm():
     """MoE TEGroupedLinear fallback for blockwise FP8.
 
-    Stock ``general_grouped_gemm`` is a fused HIP kernel that dispatches per-expert
-    GEMMs; when any operand is a ``Float8BlockwiseQTensorBase`` the kernel raises
-    "Not implemented scaling mode" on ROCm. Aiter's MoE blockscale GEMM
-    (``moe_op_gemm_a8w8_blockscale`` / ``fmoe_fp8_blockscale_g1u1``) is the right
-    target, but its calling convention differs from TE's per-expert list interface
-    and needs more validation. For the SMOKE we fall back: dequantize each expert's
-    Float8BlockwiseQTensor operand to bf16 and run a plain bf16 GEMM list via the
-    upstream kernel. Slower but correct, and only used on MoE-FP8 layers.
+    DSv4 MoE forward path goes through TE's ``GroupedLinear``:
 
-    TE's signature:
-        general_grouped_gemm(A, B, out, out_dtype, workspaces, layout='TN',
-                             m_splits, gelu, grad, accumulate, bias, use_bias,
-                             use_split_accumulator, D_dtype, single_output)
-    Each of A, B, out is a list (one per expert).
+      1. ``tex.split_quantize(inp, m_splits, [Float8BlockQuantizer, ...])``
+         -> list of per-expert Float8BlockwiseQTensor activations.
+      2. ``general_grouped_gemm(weight_list, act_list, out_list, ...)``
+         -> per-expert GEMM, fused HIP kernel.
+
+    Both of those C++ entrypoints raise "Not implemented scaling mode" on ROCm for
+    the blockwise recipe. Aiter has ``moe_op_gemm_a8w8_blockscale`` and an MoE
+    fused FP8 kernel, but plumbing them through TE's per-expert list signature is
+    fiddly. For the smoke, we route around with a bf16 fallback on BOTH ends:
+
+      - ``split_quantize`` -> still split the input tensor by ``m_splits`` but
+        return the high-precision (bf16) split slices instead of FP8 tensors.
+      - ``general_grouped_gemm`` -> if any operand is a Float8BlockwiseQTensor,
+        dequantize it via ``_my_dequant`` and call the stock bf16 grouped GEMM.
+
+    Together this drops the MoE-FP8 down to bf16 (slower than a proper aiter
+    MoE-blockscale GEMM, but correct -- the dense Linear paths still run FP8 via
+    our aiter quantize+GEMM). Only kicks in when the quantizers are blockwise.
     """
     import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockQuantizer
     from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
         Float8BlockwiseQTensorBase,
     )
+    import transformer_engine_torch as tex
 
+    # --- split_quantize: skip FP8 quantize, return bf16 splits ---
+    _orig_split_quantize = tex.split_quantize
+
+    def split_quantize(inp, m_splits, quantizers):
+        any_blk = any(isinstance(q, Float8BlockQuantizer) for q in quantizers)
+        if not any_blk:
+            return _orig_split_quantize(inp, m_splits, quantizers)
+        # Fallback: hand back the bf16 splits directly. _patch_grouped_gemm's
+        # general_grouped_gemm wrapper will treat any non-Float8Blockwise input
+        # as already-dequantized and call the stock bf16 grouped GEMM.
+        if inp.dtype != torch.bfloat16:
+            inp = inp.to(torch.bfloat16)
+        return list(torch.split(inp.contiguous(), m_splits, dim=0))
+
+    tex.split_quantize = split_quantize
+    # GroupedLinear imports tex into its module namespace by alias; rebind any
+    # already-imported module that captured the function by reference.
+    try:
+        import transformer_engine.pytorch.module.grouped_linear as _gl
+        if hasattr(_gl, "tex"):
+            _gl.tex.split_quantize = split_quantize
+    except Exception:
+        pass
+
+    # --- general_grouped_gemm: dequantize any blockwise operand ---
     _orig_grouped_gemm = gemm_mod.general_grouped_gemm
 
     def _maybe_dequant_list(items):
@@ -393,7 +426,6 @@ def _patch_grouped_gemm():
                 gelu, grad, accumulate, bias, use_bias,
                 use_split_accumulator, D_dtype, single_output,
             )
-        # Fallback: dequantize blockwise operands to bf16 and call the stock kernel.
         A_hp = _maybe_dequant_list(A)
         B_hp = _maybe_dequant_list(B)
         return _orig_grouped_gemm(
@@ -403,7 +435,6 @@ def _patch_grouped_gemm():
         )
 
     gemm_mod.general_grouped_gemm = general_grouped_gemm
-    # TE's grouped_linear module imports the name directly; patch the binding there too.
     try:
         import transformer_engine.pytorch.module.grouped_linear as _gl
         if hasattr(_gl, "general_grouped_gemm"):
