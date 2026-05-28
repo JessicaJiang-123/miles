@@ -1,13 +1,36 @@
-"""DeepSeek V4 Hyper-Connection utility — backed by deepseek-ai/TileKernels.
+"""DeepSeek V4 Hyper-Connection utility -- pure-PyTorch reference implementation.
 
-Public API (`HCHeadParams`, `DeepSeekV4HyperConnectionUtil`) preserved so that
-the Megatron-LM patch (radixark/Megatron-LM PR #28) call sites in
-``transformer_layer.py`` and ``transformer_block.py`` keep working.
+Upstream (yueming): backs `hc_pre_raw`/`hc_post_raw`/`hc_head_raw` with the
+``deepseek-ai/TileKernels`` CUDA kernels (``tile_kernels.modeling.mhc.ops``).
+Those kernels are NOT available in the AMD MI355X image we target, so we
+re-derive the math from sglang's reference torch implementation
+(`sglang/srt/models/deepseek_v4.py::DeepseekV4HCBase.hc_pre/hc_post`) and the
+TileLang sinkhorn kernel in `sglang/srt/layers/mhc.py::hc_split_sinkhorn_kernel`.
 
-Internals route ``hc_pre_raw``/``hc_post_raw``/``hc_head_raw`` to
-``tile_kernels.modeling.mhc.{mhc_pre, mhc_post, mhc_head}`` which provide
-both forward and backward kernels (the legacy in-tree implementation only had
-a no-grad forward path — see ``_HYPER_CONNECTION_MIXER_NO_GRAD = True``).
+The math (per token of x of shape (B, S, hc_mult, hidden)):
+
+  1. ``rms`` = rsqrt(mean(x_flat ** 2, dim=-1) + rms_eps)     # x_flat: (BS, hc_mult*hidden)
+  2. ``mixes`` = F.linear(x_flat, hc_fn) * rms                # (BS, (2+hc_mult)*hc_mult)
+  3. split mixes into [pre | post | comb]:
+        pre[j]      = sigmoid(mixes[j]               * hc_scale[0] + hc_base[j])         + eps
+        post[j]     = 2 * sigmoid(mixes[j + hc]      * hc_scale[1] + hc_base[j + hc])
+        comb[j, k]  = mixes[j*hc + k + 2*hc] * hc_scale[2] + hc_base[j*hc + k + 2*hc]
+  4. comb -> Sinkhorn-normalize: row softmax once, then alternate
+     row-/col-normalize for ``sinkhorn_iters`` more iterations.
+  5. layer_input = (pre.unsqueeze(-1) * x_flat).sum(dim=1)    # (BS, hidden)
+
+Post-step (hc_post_raw):
+
+      out = post.unsqueeze(-1) * x.unsqueeze(1)
+            + (comb.unsqueeze(-1) * residual.unsqueeze(2)).sum(dim=1)
+
+Heads (hc_head_raw) -- only the first hc_mult slots of `mixes` (the "pre" half)
+are used; pre is mapped to a single hidden via the same weighted sum.
+
+All ops are vanilla torch.{F.linear, sigmoid, sum, mean, rsqrt}. They are
+gradient-correct (autograd handles backward). Numerical precision: inputs are
+cast to fp32 inside the kernel (yueming's TileKernels do the same; the linear
+GEMM is FP32 over BF16 inputs).
 """
 
 import einops
@@ -17,19 +40,8 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
-from tile_kernels.modeling.mhc.ops import (
-    mhc_head_compute_mix,
-    mhc_post,
-    mhc_pre_apply_mix,
-    mhc_pre_big_fuse,
-    mhc_pre_norm_fn,
-    mhc_pre_split_mixes,
-    sinkhorn_normalize,
-)
 
-# DeepSeek V4 originally used post = 2 * sigmoid(...) for the post-layer mix
-# (see the legacy ``hc_split_sinkhorn`` kernel). TileKernels lets us pass the
-# same factor through ``post_mult_value``.
+# DeepSeek-V4 post-layer mixer factor (matches sglang `hc_post_mult_value=2.0`).
 _HC_POST_MULT_VALUE = 2.0
 
 
@@ -49,8 +61,78 @@ class HCHeadParams(MegatronModule):
         raise NotImplementedError
 
 
+def _sinkhorn_normalize(comb: Tensor, iters: int, eps: float) -> Tensor:
+    """Sinkhorn normalize the last two dims of ``comb`` (..., hc, hc).
+
+    Mirrors the TileLang kernel: row softmax once, then alternate
+    row-/col-normalize for (iters - 1) more iterations.
+    """
+    # numerically stable row softmax
+    row_max = comb.amax(dim=-1, keepdim=True)
+    comb = torch.exp(comb - row_max)
+    row_sum = comb.sum(dim=-1, keepdim=True)
+    comb = comb / row_sum + eps
+
+    col_sum = comb.sum(dim=-2, keepdim=True)
+    comb = comb / (col_sum + eps)
+
+    for _ in range(iters - 1):
+        row_sum = comb.sum(dim=-1, keepdim=True)
+        comb = comb / (row_sum + eps)
+        col_sum = comb.sum(dim=-2, keepdim=True)
+        comb = comb / (col_sum + eps)
+    return comb
+
+
+def _hc_pre_norm_mixes(x_flat: Tensor, hc_fn: Tensor, rms_eps: float) -> tuple[Tensor, Tensor]:
+    """Compute (rms-normalized) mixes = F.linear(x_flat, hc_fn) / rms(x_flat).
+
+    Inputs:
+      x_flat: (n, hc_mult * hidden)  -- bf16 or fp32
+      hc_fn:  (mix_hc, hc_mult * hidden)  -- fp32
+
+    Returns:
+      x_flat_fp32: fp32 copy of x_flat (so callers can re-use without recompute)
+      mixes:       fp32 (n, mix_hc)
+    """
+    x_flat_fp32 = x_flat.float()
+    rsqrt = torch.rsqrt(x_flat_fp32.square().mean(-1, keepdim=True) + rms_eps)
+    mixes = F.linear(x_flat_fp32, hc_fn) * rsqrt
+    return x_flat_fp32, mixes
+
+
+def _hc_split_sinkhorn(
+    mixes: Tensor,
+    hc_scale: Tensor,
+    hc_base: Tensor,
+    hc_mult: int,
+    sinkhorn_iters: int,
+    eps: float,
+) -> tuple[Tensor, Tensor, Tensor]:
+    """Pure-torch port of sglang's hc_split_sinkhorn_kernel.
+
+    Inputs are (B, S, mix_hc) where mix_hc = (2 + hc_mult) * hc_mult.
+    Returns (pre, post, comb) with shapes (*, hc_mult), (*, hc_mult), (*, hc_mult, hc_mult).
+    """
+    hc = hc_mult
+    # mixes: (..., mix_hc) -- index slots are [pre(hc) | post(hc) | comb(hc*hc)]
+    pre_slot = mixes[..., :hc]
+    post_slot = mixes[..., hc:2 * hc]
+    comb_slot = mixes[..., 2 * hc:].reshape(*mixes.shape[:-1], hc, hc)
+
+    pre_base = hc_base[:hc]
+    post_base = hc_base[hc:2 * hc]
+    comb_base = hc_base[2 * hc:].reshape(hc, hc)
+
+    pre = torch.sigmoid(pre_slot * hc_scale[0] + pre_base) + eps
+    post = _HC_POST_MULT_VALUE * torch.sigmoid(post_slot * hc_scale[1] + post_base)
+    comb = comb_slot * hc_scale[2] + comb_base
+    comb = _sinkhorn_normalize(comb, sinkhorn_iters, eps)
+    return pre, post, comb
+
+
 class DeepSeekV4HyperConnectionUtil:
-    """Hyper-Connection helper that delegates to TileKernels MHC kernels."""
+    """Hyper-Connection helper (pure-PyTorch reference impl)."""
 
     def __init__(self, config: TransformerConfig):
         self.norm_eps = config.layernorm_epsilon
@@ -65,52 +147,30 @@ class DeepSeekV4HyperConnectionUtil:
         hc_scale: Tensor,
         hc_base: Tensor,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        """``x`` is ``(B, S, hc_mult, hidden)``. Returns layer input + post/comb mixes.
-
-        TileKernels' ``mhc_pre_norm_fn`` requires ``x`` in bf16 and ``fn`` in fp32
-        (matching the original DeepSeek-V4 weight layout).
-        """
+        """``x`` is ``(B, S, hc_mult, hidden)``. Returns layer input + post/comb mixes."""
+        assert hc_fn.dtype == torch.float32
+        assert hc_scale.dtype == torch.float32
+        assert hc_base.dtype == torch.float32
         dtype = x.dtype
-        x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
-
-        # Inline ``tile_kernels.modeling.mhc.functional.mhc_pre`` so we can
-        # pass ``fuse_grad_acc=False`` to ``mhc_pre_norm_fn``. The default
-        # ``fuse_grad_acc=True`` path requires ``mhc_post`` to have written
-        # ``grad_from_mhc_post`` onto the same residual storage during
-        # backward — but Megatron's call sites use independent ``layer_pre``/
-        # ``layer_post`` rearranges, so the storage objects don't match.
-        if not torch.is_grad_enabled():
-            post, comb, layer_input = mhc_pre_big_fuse(
-                x_bf16,
-                hc_fn,
-                hc_scale,
-                hc_base,
-                rms_eps=self.norm_eps,
-                mhc_pre_eps=self.hc_eps,
-                mhc_sinkhorn_eps=self.hc_eps,
-                mhc_post_mult_value=_HC_POST_MULT_VALUE,
-                sinkhorn_repeat=self.hc_sinkhorn_iters,
-                n_splits=16,
-            )
-        else:
-            mixes = mhc_pre_norm_fn(
-                x_bf16,
-                hc_fn,
-                None,
-                self.norm_eps,
-                fuse_grad_acc=False,
-            )
-            pre_mix, post, comb = mhc_pre_split_mixes(
-                mixes,
-                hc_scale,
-                hc_base,
-                self.hc_mult,
-                _HC_POST_MULT_VALUE,
-                self.hc_eps,
-            )
-            comb = sinkhorn_normalize(comb, repeat=self.hc_sinkhorn_iters, eps=self.hc_eps)
-            layer_input = mhc_pre_apply_mix(x_bf16, pre_mix)
-        return layer_input.to(dtype), post, comb
+        b, s, hc, hidden = x.shape
+        # Flatten the (hc_mult, hidden) tail into one vector per token.
+        x_flat = x.reshape(b * s, hc * hidden)
+        x_flat_fp32, mixes = _hc_pre_norm_mixes(x_flat, hc_fn, self.norm_eps)
+        pre, post, comb = _hc_split_sinkhorn(
+            mixes,
+            hc_scale,
+            hc_base,
+            self.hc_mult,
+            self.hc_sinkhorn_iters,
+            self.hc_eps,
+        )
+        # pre: (n, hc); x reshape: (n, hc, hidden). weighted sum across hc.
+        x_per_token = x_flat_fp32.view(b * s, hc, hidden)
+        layer_input = (pre.unsqueeze(-1) * x_per_token).sum(dim=1)  # (n, hidden)
+        layer_input = layer_input.view(b, s, hidden).to(dtype)
+        post = post.view(b, s, hc)
+        comb = comb.view(b, s, hc, hc)
+        return layer_input, post, comb
 
     def hc_post_raw(
         self,
@@ -121,14 +181,20 @@ class DeepSeekV4HyperConnectionUtil:
     ) -> Tensor:
         """``x``: ``(B, S, hidden)``; ``residual``: ``(B, S, hc_mult, hidden)``.
 
-        TileKernels' ``mhc_post_fwd`` expects ``x``/``residual`` in bf16 and
-        ``post``/``comb`` in fp32.
+        Returns ``(B, S, hc_mult, hidden)``: out[..., j, :] is
+        ``post[..., j] * x + sum_k(comb[..., j, k] * residual[..., k, :])``.
         """
         dtype = x.dtype
-        x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
-        res_bf16 = (residual if residual.dtype == torch.bfloat16 else residual.bfloat16()).contiguous()
-        out = mhc_post(x_bf16, res_bf16, post, comb)
-        return out.to(dtype)
+        x_fp32 = x.float()
+        residual_fp32 = residual.float()
+        post_fp32 = post.float()
+        comb_fp32 = comb.float()
+        # post * x (B,S,hc,h): broadcast hc over hidden
+        term_x = post_fp32.unsqueeze(-1) * x_fp32.unsqueeze(-2)  # (B,S,hc,hidden)
+        # comb @ residual:  einsum('bsjk,bskh->bsjh', comb, residual)
+        term_res = torch.einsum("bsjk,bskh->bsjh", comb_fp32, residual_fp32)
+        out = (term_x + term_res).to(dtype)
+        return out
 
     def hc_head_raw(
         self,
@@ -137,36 +203,29 @@ class DeepSeekV4HyperConnectionUtil:
         hc_scale: Tensor,
         hc_base: Tensor,
     ) -> Tensor:
-        """``x``: ``(B, S, hc_mult, hidden)``. Returns ``(B, S, hidden)``."""
+        """``x``: ``(B, S, hc_mult, hidden)``. Returns ``(B, S, hidden)``.
+
+        The head-mixer projects the hc_mult residual streams down to one. We
+        reuse the same ``pre`` formula as in ``hc_pre_raw`` but pad/truncate
+        the mixer FN to a single weighted-sum coefficient per stream.
+        """
         assert hc_fn.dtype == torch.float32
         assert hc_scale.dtype == torch.float32
         assert hc_base.dtype == torch.float32
-
         dtype = x.dtype
-        x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
+        b, s, hc, hidden = x.shape
+        x_flat = x.reshape(b * s, hc * hidden)
+        x_flat_fp32 = x_flat.float()
 
-        # NOTE: TileKernels' ``mhc_head`` ends with ``mixes[..., :mhc_mult]``
-        # which is a non-contiguous view that ``mhc_head_compute_mix_fwd_kernel``
-        # rejects (it asserts ``strides[0] == mhc_mult``). We inline the body
-        # and force a contiguous slice before the kernel call.
-        mhc_mult = self.hc_mult
-        mhc_mult3 = mhc_mult * (2 + mhc_mult)
-        fn_padded = hc_fn
-        if fn_padded.shape[0] < mhc_mult3:
-            fn_padded = F.pad(fn_padded, (0, 0, 0, mhc_mult3 - fn_padded.shape[0]))
-
-        mixes = mhc_pre_norm_fn(
-            x_bf16,
-            fn_padded,
-            None,
-            self.norm_eps,
-            fuse_grad_acc=False,
-        )
-        mix_in = mixes[..., :mhc_mult].contiguous()
-        scale = hc_scale.reshape(1) if hc_scale.numel() == 1 else hc_scale
-        out_mix = mhc_head_compute_mix(mix_in, scale, hc_base, self.hc_eps)
-        layer_input = mhc_pre_apply_mix(x_bf16, out_mix.unsqueeze(-1))
-        return layer_input.to(dtype)
+        rsqrt = torch.rsqrt(x_flat_fp32.square().mean(-1, keepdim=True) + self.norm_eps)
+        # hc_fn here is (hc_mult, hc_mult*hidden) (the head-mixer weights), so the
+        # linear produces (n, hc_mult) directly: one scalar coefficient per residual stream.
+        mixes = F.linear(x_flat_fp32, hc_fn) * rsqrt  # (n, hc)
+        scale = hc_scale.reshape(-1)[0]  # single scalar
+        pre = torch.sigmoid(mixes * scale + hc_base) + self.hc_eps  # (n, hc)
+        x_per_token = x_flat_fp32.view(b * s, hc, hidden)
+        layer_input = (pre.unsqueeze(-1) * x_per_token).sum(dim=1)  # (n, hidden)
+        return layer_input.view(b, s, hidden).to(dtype)
 
     def layer_pre(
         self,
