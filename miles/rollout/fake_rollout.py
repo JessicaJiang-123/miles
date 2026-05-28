@@ -41,8 +41,17 @@ def fake_generate_rollout(
         # Need response_length >= TP-size * micro-batch-size so per-rank sequence-parallel
         # slice is non-empty. The qwen3 smoke uses 100, and DSv4 smoke launches with TP=8.
         resp_len = max(args.rollout_max_response_len // 2, 64)
+        # Ensure a NON-EMPTY prompt prefix. The loss path computes log_prob[i] for
+        # response token i from logits at position (prompt_len + i - 1); with
+        # prompt_len=0 the first response position yields logits[-1] (an empty
+        # slice in get_responses' `logits[start-1:end-1]`). Synthesizing one BOS-ish
+        # token if the data source didn't pre-tokenize a prompt keeps the
+        # off-by-one consistent with real rollouts.
+        existing_prompt = list(s.tokens) if s.tokens else []
+        if len(existing_prompt) == 0:
+            existing_prompt = [1]  # any single token; bos/eos work
         fake_tokens = [rng.randint(1000, 10000) for _ in range(resp_len)]
-        s.tokens = list(s.tokens) + fake_tokens
+        s.tokens = existing_prompt + fake_tokens
         s.response = "fake response"
         s.response_length = resp_len
         s.reward = float(rng.random())
