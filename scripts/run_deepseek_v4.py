@@ -357,7 +357,13 @@ def _train(args: ScriptArgs):
                 "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
                 # Force HIP-friendly attention backend & helper kernels.
                 "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
-                "SGLANG_TOPK_TRANSFORM_512_TORCH": "0",
+                # =1 to route through topk_transform_512_pytorch_vectorized
+                # instead of torch.ops.sgl_kernel.deepseek_v4_topk_transform_512
+                # (the installed sgl_kernel 0.4.1 on miles-hai2 doesn't expose
+                # DSv4 ops). Flip back to "0" after sgl_kernel >= 0.4.2 is
+                # installed (per hai-1's image), which would add this op
+                # natively via the precompiled .so.
+                "SGLANG_TOPK_TRANSFORM_512_TORCH": "1",
                 "SGLANG_OPT_USE_FUSED_STORE_CACHE": "true",
                 "SGLANG_OPT_USE_OVERLAP_STORE_CACHE": "false",
                 "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
