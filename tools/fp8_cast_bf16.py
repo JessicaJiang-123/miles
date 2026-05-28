@@ -55,12 +55,15 @@ def main(fp8_path, bf16_path):
     loaded_files = {}
     fp8_weight_names = []
 
-    # Helper function to get tensor from the correct file
+    # Helper function to get tensor from the correct file. Tensors are loaded to CPU
+    # (the per-shard dicts can be many GB; staying on CPU avoids OOMing the GPU when
+    # an MoE shard has 256 experts x 3 weights). We move only the (weight, scale)
+    # pair to GPU for dequant, then move the bf16 result back to CPU.
     def get_tensor(tensor_name):
         file_name = weight_map[tensor_name]
         if file_name not in loaded_files:
             file_path = os.path.join(fp8_path, file_name)
-            loaded_files[file_name] = load_file(file_path, device="cuda")
+            loaded_files[file_name] = load_file(file_path, device="cpu")
         return loaded_files[file_name][tensor_name]
 
     safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
@@ -68,7 +71,7 @@ def main(fp8_path, bf16_path):
     for safetensor_file in tqdm(safetensor_files):
         print(f"Handling file: {safetensor_file}")
         file_name = os.path.basename(safetensor_file)
-        current_state_dict = load_file(safetensor_file, device="cuda")
+        current_state_dict = load_file(safetensor_file, device="cpu")
         loaded_files[file_name] = current_state_dict
 
         new_state_dict = {}
@@ -98,7 +101,12 @@ def main(fp8_path, bf16_path):
                     new_state_dict[weight_name] = weight
                     continue
                 fp8_weight_names.append(weight_name)
-                new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
+                w_gpu = weight.contiguous().cuda()
+                s_gpu = scale_inv.contiguous().cuda()
+                deq = weight_dequant(w_gpu, s_gpu).to("cpu")
+                del w_gpu, s_gpu
+                torch.cuda.empty_cache()
+                new_state_dict[weight_name] = deq
             else:
                 new_state_dict[weight_name] = weight
 
