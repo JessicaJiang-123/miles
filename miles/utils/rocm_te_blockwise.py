@@ -264,10 +264,20 @@ def _patch_gemm():
 
         if bias is not None:
             res = res + bias.to(res.dtype)
+        bias_grad = None
+        if grad and bias is not None:
+            bias_grad = res.sum(dim=0).to(bias.dtype) if res.dim() == 2 else None
         if out is not None:
-            out.copy_(res)
+            # Honor Megatron's fused wgrad accumulation (out is main_grad, accumulate=True).
+            res_c = res.to(out.dtype)
+            if accumulate:
+                if beta not in (None, 1.0, 0.0):
+                    out.mul_(beta)
+                out.add_(res_c)
+            else:
+                out.copy_(res_c)
             res = out
-        return res, None, None, None
+        return res, bias_grad, None, None
 
     gemm_mod.general_gemm = general_gemm
     # te.Linear imports general_gemm by name into its module namespace; patch there too.
