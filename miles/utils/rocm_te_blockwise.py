@@ -301,6 +301,48 @@ def _patch_gemm():
         pass
 
 
+def _patch_norm():
+    """Stop the FUSED norm+quantize C++ kernel from being handed a Float8BlockQuantizer.
+
+    LayerNormLinear/LayerNormMLP call apply_normalization() passing the input_quantizer to
+    a fused HIP rmsnorm/layernorm kernel (tex.rmsnorm_fwd), whose blockwise cast path is
+    unimplemented. Mirror TE's own ROCm workaround for Float8CurrentScalingQuantizer: run
+    the norm in high precision (quantizer=None), then quantize via our aiter path.
+    """
+    import transformer_engine.pytorch.module._common as _common
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockQuantizer
+
+    _orig_apply_norm = _common.apply_normalization
+
+    def apply_normalization(
+        inputmat, ln_out, ln_weight, ln_bias, eps, output_quantizer, output_dtype,
+        normalization, fwd_ln_sm_margin, zero_centered_gamma,
+    ):
+        if isinstance(output_quantizer, Float8BlockQuantizer):
+            out, mu, rsigma = _orig_apply_norm(
+                inputmat, ln_out, ln_weight, ln_bias, eps, None, output_dtype,
+                normalization, fwd_ln_sm_margin, zero_centered_gamma,
+            )
+            return output_quantizer.quantize(out), mu, rsigma
+        return _orig_apply_norm(
+            inputmat, ln_out, ln_weight, ln_bias, eps, output_quantizer, output_dtype,
+            normalization, fwd_ln_sm_margin, zero_centered_gamma,
+        )
+
+    _common.apply_normalization = apply_normalization
+    for modname in (
+        "transformer_engine.pytorch.module.layernorm_linear",
+        "transformer_engine.pytorch.module.layernorm_mlp",
+    ):
+        try:
+            import importlib
+            m = importlib.import_module(modname)
+            if hasattr(m, "apply_normalization"):
+                m.apply_normalization = apply_normalization
+        except Exception:
+            pass
+
+
 def enable() -> bool:
     """Idempotently route ROCm/TE blockwise FP8 through aiter. Call before building TE modules."""
     global _ENABLED
@@ -311,5 +353,6 @@ def enable() -> bool:
     lift_te_gate()
     _patch_quantizer()
     _patch_gemm()
+    _patch_norm()
     _ENABLED = True
     return True

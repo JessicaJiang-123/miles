@@ -222,6 +222,51 @@ def _patch_gemm():
             pass
 
 
+def _patch_norm():
+    """Stop the FUSED norm+quantize C++ kernel from being handed a Float8BlockQuantizer.
+
+    LayerNormLinear/LayerNormMLP call apply_normalization() passing the input_quantizer to
+    a fused HIP rmsnorm/layernorm kernel (tex.rmsnorm_fwd), whose blockwise cast path is
+    unimplemented ("Not implemented scaling mode"). Mirror TE's own ROCm workaround for
+    Float8CurrentScalingQuantizer: run the norm in high precision (quantizer=None), then
+    quantize the bf16 norm output with our Python Float8BlockQuantizer.quantize (aiter).
+    """
+    import transformer_engine.pytorch.module._common as _common
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockQuantizer
+
+    _orig_apply_norm = _common.apply_normalization
+
+    def apply_normalization(
+        inputmat, ln_out, ln_weight, ln_bias, eps, output_quantizer, output_dtype,
+        normalization, fwd_ln_sm_margin, zero_centered_gamma,
+    ):
+        if isinstance(output_quantizer, Float8BlockQuantizer):
+            # high-precision norm (no fused quant), then aiter quant
+            out, mu, rsigma = _orig_apply_norm(
+                inputmat, ln_out, ln_weight, ln_bias, eps, None, output_dtype,
+                normalization, fwd_ln_sm_margin, zero_centered_gamma,
+            )
+            return output_quantizer.quantize(out), mu, rsigma
+        return _orig_apply_norm(
+            inputmat, ln_out, ln_weight, ln_bias, eps, output_quantizer, output_dtype,
+            normalization, fwd_ln_sm_margin, zero_centered_gamma,
+        )
+
+    _common.apply_normalization = apply_normalization
+    # modules import apply_normalization by name into their namespace
+    for modname in (
+        "transformer_engine.pytorch.module.layernorm_linear",
+        "transformer_engine.pytorch.module.layernorm_mlp",
+    ):
+        try:
+            import importlib
+            m = importlib.import_module(modname)
+            if hasattr(m, "apply_normalization"):
+                m.apply_normalization = apply_normalization
+        except Exception:
+            pass
+
+
 def apply():
     """Idempotently route ROCm/TE blockwise FP8 through aiter. Safe to call repeatedly."""
     global _APPLIED
@@ -234,6 +279,7 @@ def apply():
     _tefp8.check_fp8_block_scaling_support = lambda: (True, "")
     _patch_quantizer()
     _patch_gemm()
+    _patch_norm()
     _APPLIED = True
     import os
     if os.environ.get("RANK", "0") in ("0", ""):
