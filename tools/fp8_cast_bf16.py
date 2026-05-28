@@ -119,12 +119,19 @@ def main(fp8_path, bf16_path):
             del loaded_files[oldest_file]
             torch.cuda.empty_cache()
 
-    # Update model index
+    # Update model index. Drop both DSv3-style '<name>_scale_inv' AND DSv4-style
+    # '<base>.scale' entries -- the dequantized BF16 dump no longer needs them
+    # (and they're absent from the saved safetensors, so mbridge would crash
+    # trying to load them).
     new_model_index_file = os.path.join(bf16_path, "model.safetensors.index.json")
     for weight_name in fp8_weight_names:
         scale_inv_name = f"{weight_name}_scale_inv"
         if scale_inv_name in weight_map:
             weight_map.pop(scale_inv_name)
+        if weight_name.endswith(".weight"):
+            scale_dot = weight_name.removesuffix(".weight") + ".scale"
+            if scale_dot in weight_map:
+                weight_map.pop(scale_dot)
     with open(new_model_index_file, "w") as f:
         json.dump({"metadata": {}, "weight_map": weight_map}, f, indent=2)
 

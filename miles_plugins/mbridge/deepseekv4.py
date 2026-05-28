@@ -59,7 +59,10 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
     _MLP_MAPPING = DeepseekV3Bridge._MLP_MAPPING.copy()
     _MLP_MAPPING.update(
         {
-            "mlp.router.tid2eid": ["model.layers.{layer_number}.mlp.topk.tid2eid"],
+            # Our Pinaster -> HF renamer writes 'mlp.gate.tid2eid' (mirroring the standard
+            # HF DeepseekV3 gate naming). Yueming's pre-renamer convention was
+            # 'mlp.topk.tid2eid'; we use the HF-canonical name here.
+            "mlp.router.tid2eid": ["model.layers.{layer_number}.mlp.gate.tid2eid"],
         }
     )
 

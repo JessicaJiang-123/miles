@@ -138,7 +138,7 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "mlp.router.expert_bias":
             return [(f"model.layers.{layer_idx}.mlp.gate.e_score_correction_bias", param)]
         elif rest == "mlp.router.tid2eid":
-            return [(f"model.layers.{layer_idx}.mlp.topk.tid2eid", param)]
+            return [(f"model.layers.{layer_idx}.mlp.gate.tid2eid", param)]
 
         elif rest == "mlp.linear_fc1.weight":
             gate_weight, up_weight = param.chunk(2, dim=0)
