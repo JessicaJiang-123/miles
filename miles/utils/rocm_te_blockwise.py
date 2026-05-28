@@ -168,6 +168,40 @@ def _extract(t, e4m3_torch, *, columnwise: bool):
     return data.reshape(-1, data.shape[-1]).contiguous(), s.contiguous(), sdim
 
 
+def _my_dequant(t):
+    """Dequantize a Float8BlockwiseQTensor stored in OUR scale convention -> bf16.
+
+    Rowwise 1x128: data [...,K], scale [M, K/128]. Rowwise 128x128: scale [M/128, K/128].
+    Must not use TE's dequantize() (assumes the cuBLAS-transposed GEMM_READY layout).
+    """
+    _, e4m3, _ = _aiter_bits()
+    orig_shape = tuple(t.shape)
+    K = orig_shape[-1]
+    M = 1
+    for d in orig_shape[:-1]:
+        M *= d
+    sdim = getattr(t, "_aiter_block_scaling_dim", 2 if t._is_2D_scaled else 1)
+    if t._rowwise_data is not None:
+        data = _from_uint8(t._rowwise_data, e4m3).reshape(M, K).float()
+        s = t._rowwise_scale_inv
+        if sdim == 1:
+            deq = (data.view(M, K // BLK, BLK) * s.view(M, K // BLK, 1)).view(M, K)
+        else:
+            deq = (
+                data.view(M // BLK, BLK, K // BLK, BLK) * s.view(M // BLK, 1, K // BLK, 1)
+            ).view(M, K)
+        return deq.to(torch.bfloat16).reshape(orig_shape).contiguous()
+    cdata = _from_uint8(t._columnwise_data, e4m3).reshape(K, M).float()
+    s = t._columnwise_scale_inv
+    if sdim == 1:
+        deqT = (cdata.view(K, M // BLK, BLK) * s.view(K, M // BLK, 1)).view(K, M)
+    else:
+        deqT = (
+            cdata.view(K // BLK, BLK, M // BLK, BLK) * s.view(K // BLK, 1, M // BLK, 1)
+        ).view(K, M)
+    return deqT.t().to(torch.bfloat16).reshape(orig_shape).contiguous()
+
+
 def _patch_gemm():
     import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
     from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
@@ -367,7 +401,7 @@ def _patch_gather():
         if not is_blk:
             return _orig_gather(inp, process_group, async_op, quantizer)
         world_size = get_distributed_world_size(process_group)
-        hp = inp.dequantize() if isinstance(inp, Float8BlockwiseQTensorBase) else inp
+        hp = _my_dequant(inp) if isinstance(inp, Float8BlockwiseQTensorBase) else inp
         if world_size == 1:
             out_hp = hp
         else:

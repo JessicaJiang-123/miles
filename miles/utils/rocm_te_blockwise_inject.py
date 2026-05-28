@@ -143,6 +143,46 @@ def _extract(t, e4m3_torch, *, columnwise):
     return data.reshape(-1, data.shape[-1]).contiguous(), s.contiguous(), sdim
 
 
+def _my_dequant(t):
+    """Dequantize a Float8BlockwiseQTensor stored in OUR scale convention -> bf16.
+
+    Rowwise 1x128 (activation/grad): data [..., K] e4m3-as-uint8, scale [M, K/128].
+    Rowwise 128x128 (weight): data [N, K], scale [N/128, K/128]. Returns the row-major
+    high-precision tensor with the SAME logical shape as t.
+    """
+    from aiter.ops.triton.utils.types import get_fp8_dtypes
+
+    _, e4m3 = get_fp8_dtypes()
+    orig_shape = tuple(t.shape)
+    K = orig_shape[-1]
+    M = 1
+    for d in orig_shape[:-1]:
+        M *= d
+    sdim = getattr(t, "_aiter_block_scaling_dim", 2 if t._is_2D_scaled else 1)
+
+    if t._rowwise_data is not None:
+        data = _from_uint8(t._rowwise_data, e4m3).reshape(M, K).float()
+        s = t._rowwise_scale_inv
+        if sdim == 1:  # scale [M, K/128]
+            deq = (data.view(M, K // BLK, BLK) * s.view(M, K // BLK, 1)).view(M, K)
+        else:  # scale [M/128, K/128]
+            deq = (
+                data.view(M // BLK, BLK, K // BLK, BLK) * s.view(M // BLK, 1, K // BLK, 1)
+            ).view(M, K)
+        return deq.to(torch.bfloat16).reshape(orig_shape).contiguous()
+
+    # columnwise-only: our convention stores the transpose, data [K, M], scale over K.
+    cdata = _from_uint8(t._columnwise_data, e4m3).reshape(K, M).float()
+    s = t._columnwise_scale_inv
+    if sdim == 1:  # scale [K, M/128]
+        deqT = (cdata.view(K, M // BLK, BLK) * s.view(K, M // BLK, 1)).view(K, M)
+    else:  # scale [K/128, M/128]
+        deqT = (
+            cdata.view(K // BLK, BLK, M // BLK, BLK) * s.view(K // BLK, 1, M // BLK, 1)
+        ).view(K, M)
+    return deqT.t().to(torch.bfloat16).reshape(orig_shape).contiguous()
+
+
 def _patch_gemm():
     import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
     from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
@@ -295,9 +335,12 @@ def _patch_gather():
             return _orig_gather(inp, process_group, async_op, quantizer)
 
         world_size = get_distributed_world_size(process_group)
-        # Dequantize to high precision if already quantized.
+        # Dequantize to high precision if already quantized. We must NOT use TE's
+        # dequantize() -- it assumes the cuBLAS-transposed GEMM_READY scale layout, but our
+        # rowwise scales are stored natural ([M, K/128] for 1x128). Dequant in our own
+        # convention instead.
         if isinstance(inp, Float8BlockwiseQTensorBase):
-            hp = inp.dequantize()
+            hp = _my_dequant(inp)
         else:
             hp = inp
         if world_size == 1:
