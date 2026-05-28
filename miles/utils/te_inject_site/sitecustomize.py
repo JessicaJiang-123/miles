@@ -85,3 +85,16 @@ if os.environ.get("ROCM_TE_BLOCKWISE_INJECT", "0") == "1":
             print(f"[sitecustomize] rocm_te_blockwise inject (eager) failed: {e}", flush=True)
     else:
         sys.meta_path.insert(0, _Finder())
+
+# DSv4 sglang real-rollout shim: backfill transformers 5.x's rope_parameters -> rope_theta
+# so yueming-sglang's deepseek_v4 model can read config.rope_theta as it expects.
+# Self-gated on env var inside the module; importing it is idempotent and cheap.
+if os.environ.get("MILES_DSV4_TRANSFORMERS_SHIM", "0") == "1":
+    try:
+        import importlib.util as _u
+        _shim_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dsv4_transformers_shim.py")
+        _spec = _u.spec_from_file_location("miles_dsv4_transformers_shim", _shim_path)
+        _mod = _u.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+    except Exception as _e:  # pragma: no cover
+        print(f"[sitecustomize] dsv4_transformers_shim load failed: {_e}", flush=True)
