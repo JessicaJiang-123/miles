@@ -106,12 +106,19 @@ def main():
         device_id=torch.device(f"cuda:{local_rank}"),
     )
     args = get_args()
-    init(args)
-    model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
 
-    # Load model
-    hf_model_path = args.hf_checkpoint
-    bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
+    # DSv4: HF transformers doesn't know `deepseek_v4`/`deepseek_ref` model_type. Patch
+    # AutoConfig.from_pretrained inline (within the patch context) so AutoBridge can
+    # construct the right config for the DSv4 HF checkpoint.
+    from miles.utils.transformers_patch import with_transformers_patch
+
+    with with_transformers_patch():
+        init(args)
+        model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
+
+        # Load model
+        hf_model_path = args.hf_checkpoint
+        bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
 
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")
