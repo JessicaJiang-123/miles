@@ -705,6 +705,315 @@ def _patch_gather():
                     pass
 
 
+def _install_import_hook(modname, callback):
+    """Run `callback()` immediately after `modname` finishes importing.
+
+    Inserts a MetaPathFinder at the front of sys.meta_path that, when asked for `modname`,
+    delegates to the regular finders and wraps the returned loader so callback fires after
+    exec_module(). The finder de-registers itself once the callback runs.
+    """
+    import sys
+    import importlib.util
+    from importlib.abc import MetaPathFinder, Loader
+
+    class _WrapLoader(Loader):
+        def __init__(self, inner):
+            self._inner = inner
+
+        def create_module(self, spec):
+            return self._inner.create_module(spec)
+
+        def exec_module(self, module):
+            self._inner.exec_module(module)
+            try:
+                callback()
+            except Exception as ex:  # pragma: no cover
+                print(f"[rocm_te_blockwise_inject] deferred patch for {modname} failed: {ex}",
+                      flush=True)
+
+    class _Finder(MetaPathFinder):
+        _busy = False
+
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname != modname or self._busy:
+                return None
+            self._busy = True
+            try:
+                spec = importlib.util.find_spec(fullname)
+            finally:
+                self._busy = False
+            if spec is None or spec.loader is None:
+                return None
+            spec.loader = _WrapLoader(spec.loader)
+            # de-register: only fire once
+            try:
+                sys.meta_path.remove(self)
+            except ValueError:
+                pass
+            return spec
+
+    sys.meta_path.insert(0, _Finder())
+
+
+def _patch_megatron_te_grouped_mlp_fmoe():
+    """Module-level fprop optimization for Megatron's TEGroupedMLP via aiter fmoe (Approach A).
+
+    Replaces the per-expert FP8 grouped GEMM loop (fc1 + swiglu + fc2 done as 2*E
+    separate launches) with ONE fmoe_fp8_blockscale_g1u1 launch covering the entire
+    MoE MLP. Backward stays on the existing per-expert path (which is what TE's
+    autograd already wires through our patched general_grouped_gemm).
+
+    Wiring trick: by the time TEGroupedMLP.forward runs, tokens are already permuted
+    by local expert. fmoe wants UN-permuted [T, K] + topk_ids and routes itself. We
+    bridge by constructing a SYNTHETIC topk=1 topk_ids where each row's "expert" is
+    the expert that owns that permuted slot. Then aiter.moe_sorting produces an
+    identity sorted_token_ids and fmoe writes
+    ``out[i] = sorted_weights[i] * mlp_e(input[i])`` -- which is exactly Megatron's
+    TEGroupedMLP return value (probs-multiply commutes with FC2).
+
+    Backward is handled by a custom autograd.Function: it saves the inputs + a flag
+    telling it to re-run TEGroupedMLP's ORIGINAL bf16/FP8 forward in the backward
+    pass under torch.enable_grad, then call torch.autograd.grad to compute the
+    gradients. This means backward still uses the proven per-expert aiter blockscale
+    loop (via our _patch_grouped_gemm), trading a one-extra-fc1+swiglu+fc2 in bwd
+    for an N-launch -> 1-launch win in fwd. Net: faster fwd, same accuracy on bwd.
+
+    GATED via ROCM_FMOE_FPROP=1 so the smoke can be run with the change OFF first to
+    confirm baseline, then ON to validate the speedup.
+
+    Validated in isolation: see tests/rocm/test_fmoe_megatron_layout.py (rel err ~3.3%
+    vs per-expert aiter loop on Megatron-style permuted inputs).
+    """
+    import os
+    if os.environ.get("ROCM_FMOE_FPROP", "0") != "1":
+        return
+
+    try:
+        import aiter
+        from aiter import ActivationType
+        from aiter.fused_moe import moe_sorting
+        from aiter.ops.shuffle import shuffle_weight
+        from aiter.ops.triton.utils.types import get_fp8_dtypes
+    except Exception as e:
+        if os.environ.get("RANK", "0") in ("0", ""):
+            print(f"[rocm_te_blockwise_inject] fmoe fprop disabled (aiter import failed: {e})",
+                  flush=True)
+        return
+
+    _, e4m3 = get_fp8_dtypes()
+    fmax = float(torch.finfo(e4m3).max)
+
+    def _q_1x128_act(x):
+        M, K = x.shape
+        xv = x.float().view(M, K // BLK, BLK)
+        s = xv.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / fmax
+        xq = (xv / s).clamp(-fmax, fmax).to(e4m3).view(M, K)
+        return xq, s.squeeze(-1).contiguous()
+
+    def _q_128x128_per_expert(W):
+        E, N, K = W.shape
+        wv = W.float().view(E, N // BLK, BLK, K // BLK, BLK)
+        s = wv.abs().amax(dim=(2, 4), keepdim=True).clamp(min=1e-12) / fmax
+        wq = (wv / s).clamp(-fmax, fmax).to(e4m3).view(E, N, K)
+        return wq, s.view(E, N // BLK, K // BLK).float().contiguous()
+
+    _logged = {"fwd": False, "fallback": False}
+    _orig_forward = [None]  # populated by _bind_to_megatron once megatron is loaded
+
+    def _maybe_log(key, msg):
+        if not _logged[key] and os.environ.get("RANK", "0") in ("0", ""):
+            print(msg, flush=True)
+            _logged[key] = True
+
+    class _FmoeFprop(torch.autograd.Function):
+        @staticmethod
+        def forward(
+            ctx,
+            permuted_input,
+            tokens_per_expert_list,
+            permuted_probs,
+            self_module,
+            *params_w_in_order,
+        ):
+            """params_w_in_order = (fc1.weight0, fc1.weight1, ..., fc2.weight0, fc2.weight1, ...).
+            We need them in the graph so backward can autograd-compute their wgrads.
+            """
+            E = self_module.num_local_experts
+            assert len(params_w_in_order) == 2 * E
+            w1_list = list(params_w_in_order[:E])  # each [2*I, K]
+            w2_list = list(params_w_in_order[E:])  # each [K, I]
+            w1 = torch.stack(w1_list, dim=0).contiguous()  # [E, 2*I, K]
+            w2 = torch.stack(w2_list, dim=0).contiguous()  # [E, K, I]
+
+            T_local, K = permuted_input.shape
+
+            # Quantize input + weights
+            a_q, a_s = _q_1x128_act(permuted_input.contiguous())
+            a_s_t = a_s.t().contiguous()
+            w1q, w1s = _q_128x128_per_expert(w1)
+            w2q, w2s = _q_128x128_per_expert(w2)
+            w1q_s = shuffle_weight(w1q, (16, 16))
+            w2q_s = shuffle_weight(w2q, (16, 16))
+
+            # Build identity routing topk_ids/weights from tokens_per_expert_list.
+            device = permuted_input.device
+            expert_for_slot = torch.empty(T_local, dtype=torch.int32, device=device)
+            cursor = 0
+            for e, c in enumerate(tokens_per_expert_list):
+                if c == 0:
+                    continue
+                expert_for_slot[cursor:cursor + c] = e
+                cursor += c
+            topk_ids = expert_for_slot.view(T_local, 1)
+            topk_w = permuted_probs.view(T_local, 1).float().contiguous()
+
+            sorted_tok, sorted_w, sorted_eid, num_valid, moe_buf = moe_sorting(
+                topk_ids, topk_w, E, K, torch.bfloat16
+            )
+
+            aiter.fmoe_fp8_blockscale_g1u1(
+                moe_buf, a_q, w1q_s, w2q_s,
+                sorted_tok, sorted_w, sorted_eid, num_valid,
+                1,
+                a_s_t, w1s, w2s,
+                "", 128, 128, None,
+                ActivationType.Silu,
+            )
+
+            # Save for backward: we re-run the original forward under enable_grad.
+            ctx.self_module = self_module
+            ctx.tokens_per_expert_list = tokens_per_expert_list
+            ctx.save_for_backward(permuted_input, permuted_probs, *params_w_in_order)
+            return moe_buf
+
+        @staticmethod
+        def backward(ctx, dout):
+            # Re-run the original TEGroupedMLP fc1+swiglu+fc2 under enable_grad to compute
+            # gradients via the existing per-expert aiter path. dout is the upstream grad.
+            saved = ctx.saved_tensors
+            permuted_input = saved[0].detach().requires_grad_(True)
+            permuted_probs = saved[1].detach().requires_grad_(True)
+            # Weights live as module Parameters; their grads will accumulate via the autograd
+            # graph re-run. We must include them as inputs to grad() to get per-expert dW.
+            param_tensors = list(saved[2:])
+            for p in param_tensors:
+                p.requires_grad_(True)
+
+            self_module = ctx.self_module
+            tpe = ctx.tokens_per_expert_list
+            tpe_tensor = torch.tensor(tpe, dtype=torch.long, device=permuted_input.device)
+            with torch.enable_grad():
+                out, _ = _orig_forward[0](self_module, permuted_input, tpe_tensor, permuted_probs)
+            grad_inputs = torch.autograd.grad(
+                outputs=out,
+                inputs=[permuted_input, permuted_probs] + param_tensors,
+                grad_outputs=dout,
+                retain_graph=False,
+                allow_unused=True,
+            )
+            d_inp = grad_inputs[0]
+            d_probs = grad_inputs[1]
+            d_params = grad_inputs[2:]
+            # Forward had inputs (permuted_input, tokens_per_expert_list_LIST, permuted_probs,
+            #                     self_module, *params).
+            # Return grads aligned to that list: None for list / module.
+            return (d_inp, None, d_probs, None, *d_params)
+
+    def new_forward(self, permuted_local_hidden_states, tokens_per_expert, permuted_probs):
+        # Constraints for fmoe path: blockwise FP8 enabled (self.config.fp8 is true), no bias,
+        # no offloading, no recompute, no probs-on-input, K & I & T_local & each tokens_per_expert
+        # multiple of 128 (so quantize works cleanly).
+        try:
+            cfg = self.config
+            if not (cfg.fp8 and cfg.gated_linear_unit and cfg.activation_func == torch.nn.functional.silu):
+                raise RuntimeError("not silu/glu fp8")
+            if cfg.add_bias_linear or cfg.moe_apply_probs_on_input:
+                raise RuntimeError("bias_or_probs_on_input")
+            if self.offload_expert_fc1 or self.offload_moe_act or self.activation_recompute:
+                raise RuntimeError("offload_or_recompute")
+            # Pad tokens-per-expert to fmoe-friendly multiples (TE's Fp8Padding does 128).
+            if isinstance(tokens_per_expert, torch.Tensor):
+                tpe_list = tokens_per_expert.tolist()
+            else:
+                tpe_list = list(tokens_per_expert)
+            T_local, K = permuted_local_hidden_states.shape[0], permuted_local_hidden_states.shape[-1]
+            if T_local == 0 or K % BLK != 0:
+                raise RuntimeError(f"bad shape T={T_local} K={K}")
+            I = cfg.moe_ffn_hidden_size
+            if I % BLK != 0:
+                raise RuntimeError(f"bad I={I}")
+            # First run quantization_padding on input + probs (same as original forward does).
+            actual_tpe = tpe_list
+            permuted_input, padded_tpe = self.quantization_padding(
+                permuted_local_hidden_states, actual_tpe
+            )
+            permuted_probs_2d, _ = self.quantization_padding(
+                permuted_probs.unsqueeze(-1), actual_tpe
+            )
+            permuted_probs_1d = permuted_probs_2d.squeeze(-1).contiguous()
+            # Re-shape (Fp8Padding may return [T_padded, K]); each per-expert chunk is now multiple of 128.
+            T_pad = permuted_input.shape[0]
+            for c in padded_tpe:
+                if c % BLK != 0 and c != 0:
+                    raise RuntimeError(f"padded tpe not multiple of {BLK}: {padded_tpe}")
+            # Collect weights (these are the bf16 Parameters; fmoe path will quantize itself).
+            E = self.num_local_experts
+            fc1_weights = []
+            for i in range(E):
+                fc1_weights.append(getattr(self.linear_fc1, f"weight{i}"))
+            fc2_weights = []
+            for i in range(E):
+                fc2_weights.append(getattr(self.linear_fc2, f"weight{i}"))
+            # Sanity: all weights bf16, fc1 [2*I, K], fc2 [K, I]
+            for w in fc1_weights:
+                if w.shape != (2 * I, K) or w.dtype != torch.bfloat16:
+                    raise RuntimeError(f"unexpected fc1 weight: shape={w.shape} dt={w.dtype}")
+            for w in fc2_weights:
+                if w.shape != (K, I) or w.dtype != torch.bfloat16:
+                    raise RuntimeError(f"unexpected fc2 weight: shape={w.shape} dt={w.dtype}")
+        except Exception as e:
+            _maybe_log(
+                "fallback",
+                f"[rocm_te_blockwise_inject] fmoe fprop fallback to per-expert (reason: {e})",
+            )
+            return _orig_forward[0](self, permuted_local_hidden_states, tokens_per_expert, permuted_probs)
+
+        _maybe_log(
+            "fwd",
+            f"[rocm_te_blockwise_inject] TEGroupedMLP.forward via aiter fmoe_fp8_blockscale_g1u1 "
+            f"(E={E}, T_pad={T_pad}, K={K}, I={I})",
+        )
+        out = _FmoeFprop.apply(
+            permuted_input,
+            padded_tpe,
+            permuted_probs_1d,
+            self,
+            *fc1_weights,
+            *fc2_weights,
+        )
+        # quantization_unpadding to trim back to original (unpadded) T_local rows.
+        out = self.quantization_unpadding(out, actual_tpe)
+        return out, None
+
+    def _bind_to_megatron():
+        from megatron.core.transformer.moe.experts import TEGroupedMLP as _TEGM
+        _orig_forward[0] = _TEGM.forward
+        _TEGM.forward = new_forward
+        if os.environ.get("RANK", "0") in ("0", ""):
+            print("[rocm_te_blockwise_inject] TEGroupedMLP.forward patched to use aiter fmoe "
+                  "(fprop only; bwd via per-expert loop).", flush=True)
+
+    # Either bind now (megatron already imported) or defer until it is.
+    try:
+        import megatron.core.transformer.moe.experts  # noqa: F401
+        _bind_to_megatron()
+    except Exception as e:
+        if os.environ.get("RANK", "0") in ("0", ""):
+            print(f"[rocm_te_blockwise_inject] TEGroupedMLP patch deferred "
+                  f"(megatron not loaded yet: {type(e).__name__})", flush=True)
+        _install_import_hook("megatron.core.transformer.moe.experts", _bind_to_megatron)
+
+
 def apply():
     """Idempotently route ROCm/TE blockwise FP8 through aiter. Safe to call repeatedly."""
     global _APPLIED
@@ -721,6 +1030,7 @@ def apply():
     _patch_grouped_gemm()
     _patch_norm()
     _patch_gather()
+    _patch_megatron_te_grouped_mlp_fmoe()
     # Disable Megatron's jit_fuser (torch.compile). It decorates the bias-dropout-add and
     # bias-swiglu fusions; dynamo fake-tensor tracing of those over our aiter blockwise FP8
     # GEMM output raises a spurious broadcast error. Disabling here (before the fusion
