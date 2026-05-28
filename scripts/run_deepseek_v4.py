@@ -377,6 +377,11 @@ def _train(args: ScriptArgs):
                 # "true" once aiter is upgraded to >= 0.1.14.
                 "SGLANG_OPT_USE_AITER_MHC_PRE": "false",
                 "SGLANG_OPT_USE_AITER_MHC_POST": "false",
+                # Bypass @maybe_torch_compile during cuda graph capture: with
+                # AITER_MHC disabled, capture would otherwise run inductor
+                # autotune on hc_pre_torch_impl / hc_post_torch_impl for every
+                # batch size on every DP rank, adding ~30-60 min to startup.
+                "SGLANG_DISABLE_MAYBE_TORCH_COMPILE": "1",
                 "SGLANG_OPT_USE_TRITON_SWA_PREPARE": "true",
                 "SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK": "false",
                 "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "false",
