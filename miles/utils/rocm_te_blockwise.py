@@ -347,6 +347,71 @@ def _patch_gemm():
         pass
 
 
+def _patch_grouped_gemm():
+    """MoE TEGroupedLinear fallback for blockwise FP8.
+
+    Stock ``general_grouped_gemm`` is a fused HIP kernel that dispatches per-expert
+    GEMMs; when any operand is a ``Float8BlockwiseQTensorBase`` the kernel raises
+    "Not implemented scaling mode" on ROCm. Aiter's MoE blockscale GEMM
+    (``moe_op_gemm_a8w8_blockscale`` / ``fmoe_fp8_blockscale_g1u1``) is the right
+    target, but its calling convention differs from TE's per-expert list interface
+    and needs more validation. For the SMOKE we fall back: dequantize each expert's
+    Float8BlockwiseQTensor operand to bf16 and run a plain bf16 GEMM list via the
+    upstream kernel. Slower but correct, and only used on MoE-FP8 layers.
+
+    TE's signature:
+        general_grouped_gemm(A, B, out, out_dtype, workspaces, layout='TN',
+                             m_splits, gelu, grad, accumulate, bias, use_bias,
+                             use_split_accumulator, D_dtype, single_output)
+    Each of A, B, out is a list (one per expert).
+    """
+    import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
+    from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
+        Float8BlockwiseQTensorBase,
+    )
+
+    _orig_grouped_gemm = gemm_mod.general_grouped_gemm
+
+    def _maybe_dequant_list(items):
+        out = []
+        for t in items:
+            if isinstance(t, Float8BlockwiseQTensorBase):
+                out.append(_my_dequant(t))
+            else:
+                out.append(t)
+        return out
+
+    def general_grouped_gemm(
+        A, B, out, out_dtype, workspaces, layout="TN", m_splits=None,
+        gelu=False, grad=False, accumulate=False, bias=None, use_bias=False,
+        use_split_accumulator=False, D_dtype=None, single_output=False,
+    ):
+        any_blk = any(isinstance(t, Float8BlockwiseQTensorBase) for t in (*A, *B))
+        if not any_blk:
+            return _orig_grouped_gemm(
+                A, B, out, out_dtype, workspaces, layout, m_splits,
+                gelu, grad, accumulate, bias, use_bias,
+                use_split_accumulator, D_dtype, single_output,
+            )
+        # Fallback: dequantize blockwise operands to bf16 and call the stock kernel.
+        A_hp = _maybe_dequant_list(A)
+        B_hp = _maybe_dequant_list(B)
+        return _orig_grouped_gemm(
+            A_hp, B_hp, out, out_dtype, workspaces, layout, m_splits,
+            gelu, grad, accumulate, bias, use_bias,
+            use_split_accumulator, D_dtype, single_output,
+        )
+
+    gemm_mod.general_grouped_gemm = general_grouped_gemm
+    # TE's grouped_linear module imports the name directly; patch the binding there too.
+    try:
+        import transformer_engine.pytorch.module.grouped_linear as _gl
+        if hasattr(_gl, "general_grouped_gemm"):
+            _gl.general_grouped_gemm = general_grouped_gemm
+    except Exception:
+        pass
+
+
 def _patch_norm():
     """Stop the FUSED norm+quantize C++ kernel from being handed a Float8BlockQuantizer.
 
@@ -451,6 +516,7 @@ def enable() -> bool:
     lift_te_gate()
     _patch_quantizer()
     _patch_gemm()
+    _patch_grouped_gemm()
     _patch_norm()
     _patch_gather()
     _ENABLED = True
