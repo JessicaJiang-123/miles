@@ -14,6 +14,21 @@ Gated by env var ROCM_TE_BLOCKWISE_INJECT=1 (no-op otherwise).
 import os
 import sys
 
+# Chain the original (system) sitecustomize, which our PYTHONPATH entry shadows.
+# (On this image it only installs Ubuntu's apport hook, but be a good citizen.)
+try:
+    import importlib.util as _u
+
+    for _entry in sys.path:
+        _cand = os.path.join(_entry, "sitecustomize.py")
+        if os.path.abspath(_cand) != os.path.abspath(__file__) and os.path.exists(_cand):
+            _spec = _u.spec_from_file_location("_orig_sitecustomize", _cand)
+            _orig = _u.module_from_spec(_spec)
+            _spec.loader.exec_module(_orig)
+            break
+except Exception:
+    pass
+
 if os.environ.get("ROCM_TE_BLOCKWISE_INJECT", "0") == "1":
     import importlib.util
     from importlib.abc import MetaPathFinder, Loader
