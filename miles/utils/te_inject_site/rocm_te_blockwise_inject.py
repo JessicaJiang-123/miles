@@ -99,8 +99,20 @@ def _patch_quantizer():
                 q, s = quantize_1x128(x2d)
                 rowwise_data = _to_uint8(q).reshape(orig_shape).contiguous()
                 rowwise_scale = s.contiguous()
-            if self.columnwise_usage and M2 % BLK == 0:
-                qc, sc = quantize_1x128(x2d.t().contiguous())
+            if self.columnwise_usage:
+                # Quantize columnwise 1x128 along the new K-dim (which is original M).
+                # If M doesn't divide 128, pad the columnwise input to next multiple
+                # with zeros so we always produce a valid columnwise blob. The
+                # wgrad/dgrad consumers either don't care (zeros contribute zero) or
+                # see the padded M and operate on it; the rest of TE's update_usage
+                # path requires SOME columnwise data even if it isn't strictly the
+                # "1x128 along M" recipe.
+                xT = x2d.t().contiguous()  # [K, M]
+                K_, M_ = xT.shape  # K_ == K2, M_ == M2
+                if M_ % BLK != 0:
+                    pad = BLK - (M_ % BLK)
+                    xT = torch.nn.functional.pad(xT, (0, pad))  # zero-pad M dim
+                qc, sc = quantize_1x128(xT)
                 columnwise_data = _to_uint8(qc).contiguous()
                 columnwise_scale = sc.contiguous()
         else:
@@ -138,6 +150,9 @@ def _patch_quantizer():
         # Tag with the actually-used scaling dim (may differ from the quantizer's
         # configured block_scaling_dim if we demoted 128x128 -> 1x128 for a small weight).
         out._aiter_block_scaling_dim = effective_sdim
+        # Stash the unpadded M (for columnwise) so _my_dequant / _extract can trim
+        # the zero-padded rows back to the logical shape when M wasn't multiple of BLK.
+        out._aiter_columnwise_M = M2
         return out
 
     def quantize(self, tensor, *, out=None, dtype=None):
@@ -155,6 +170,7 @@ def _patch_quantizer():
         dst._data_format = new._data_format
         dst._is_2D_scaled = new._is_2D_scaled
         dst._aiter_block_scaling_dim = self.block_scaling_dim
+        dst._aiter_columnwise_M = getattr(new, "_aiter_columnwise_M", None)
         return dst
 
     Float8BlockQuantizer.quantize = quantize
@@ -168,6 +184,25 @@ def _extract(t, e4m3_torch, *, columnwise):
         u8, s = t._rowwise_data, t._rowwise_scale_inv
     data = _from_uint8(u8, e4m3_torch)
     sdim = getattr(t, "_aiter_block_scaling_dim", 2 if t._is_2D_scaled else 1)
+    # For columnwise data, if M (original) was zero-padded up to a BLK multiple,
+    # trim the padded rows out so consumers see the logical [K, M] shape.
+    if columnwise:
+        orig_M = getattr(t, "_aiter_columnwise_M", None)
+        if orig_M is not None:
+            # data stored as [K, M_padded]; trim trailing zero-padded columns.
+            data2 = data.reshape(-1, data.shape[-1])  # [K, M_padded]
+            if data2.shape[-1] != orig_M:
+                data2 = data2[:, :orig_M].contiguous()
+                # Trim scale too. For 1D scale [K, M_padded/BLK]: the last block of
+                # M may have been pad-zeros; the scale block we keep is the one
+                # containing the original M (ceildiv); if orig_M doesn't fall on a
+                # BLK boundary the last scale block covers a mix of real + padded
+                # entries.
+                if sdim == 1 and s.dim() == 2:
+                    keep = (orig_M + BLK - 1) // BLK
+                    s = s[:, :keep].contiguous()
+                # FYI sdim==2 (128x128) for small weights gets demoted to 1; no trim needed.
+            return data2.contiguous(), s.contiguous(), sdim
     return data.reshape(-1, data.shape[-1]).contiguous(), s.contiguous(), sdim
 
 
@@ -199,15 +234,22 @@ def _my_dequant(t):
             ).view(M, K)
         return deq.to(torch.bfloat16).reshape(orig_shape).contiguous()
 
-    # columnwise-only: our convention stores the transpose, data [K, M], scale over K.
-    cdata = _from_uint8(t._columnwise_data, e4m3).reshape(K, M).float()
+    # columnwise-only: our convention stores the transpose, data [K, M_padded].
+    # Trim padded M back to logical M if necessary.
+    cdata_flat = _from_uint8(t._columnwise_data, e4m3)
+    M_stored = cdata_flat.numel() // K
+    cdata = cdata_flat.reshape(K, M_stored).float()
     s = t._columnwise_scale_inv
-    if sdim == 1:  # scale [K, M/128]
-        deqT = (cdata.view(K, M // BLK, BLK) * s.view(K, M // BLK, 1)).view(K, M)
-    else:  # scale [K/128, M/128]
+    if sdim == 1:  # scale [K, M_stored/128]
+        Mb = M_stored // BLK
+        deqT = (cdata.view(K, Mb, BLK) * s.view(K, Mb, 1)).view(K, M_stored)
+    else:  # scale [K/128, M_stored/128]
         deqT = (
-            cdata.view(K // BLK, BLK, M // BLK, BLK) * s.view(K // BLK, 1, M // BLK, 1)
-        ).view(K, M)
+            cdata.view(K // BLK, BLK, M_stored // BLK, BLK) * s.view(K // BLK, 1, M_stored // BLK, 1)
+        ).view(K, M_stored)
+    # Trim to logical M
+    if M_stored != M:
+        deqT = deqT[:, :M].contiguous()
     return deqT.t().to(torch.bfloat16).reshape(orig_shape).contiguous()
 
 
