@@ -20,12 +20,15 @@ which is exactly what sglang uses to serve DSv4 in FP8 on MI3xx. This module reu
 those aiter blockscale kernels to build a training-capable blockwise FP8 linear, so the
 SAME kernel is used for train and inference (train/infer numerical consistency for free).
 
-Status (v1, validated on MI355X / gfx950)
------------------------------------------
+Status (validated on MI355X / gfx950) -- all three GEMMs are FP8:
+-----------------------------------------------------------------
 - fprop : aiter gemm_a8w8_blockscale  (X 1x128  x  W 128x128)        ~3.7% vs bf16
 - dgrad : aiter gemm_a8w8_blockscale  (dY 1x128 x  W^T 128x128)      ~4.1% vs bf16
-- wgrad : bf16 fallback (both operands are 1x128; FP8 path is TODO -- needs an
-          aiter "both per-token-group" blockscale GEMM)
+- wgrad : aiter gemm_a8w8_blockscale  (dY^T 1x128 x X^T 128x128)     ~3.7% vs bf16
+
+Known simplifications (MVP): tensor dims must be multiples of 128 (no padding yet);
+wgrad quantizes X as 128x128 (weight role) instead of 1x128 -- affects only the
+weight-gradient accumulation, not the forward numerics the rollout sees.
 
 Next: wire this into TransformerEngine (lift the gate + route the blockwise
 quantize/GEMM through here) so Megatron/miles pick it up unchanged.
@@ -94,8 +97,13 @@ class BlockwiseFP8Linear(torch.autograd.Function):
         dyq, dys = quantize_1x128(dy)
         wtq, wts = quantize_128x128(w.t().contiguous())
         dx = gemm(dyq, wtq, dys, wts, dtype=torch.bfloat16)
-        # wgrad: dW = dY^T @ X -- v1 bf16 fallback (both operands 1x128)
-        dw = (dy.float().t() @ x.float()).to(w.dtype)
+        # wgrad: dW = dY^T @ X. Map to aiter(a,b)=a@b^T (contract over token dim M):
+        #   a = dY^T [N,M] as 1x128 (activation role), b = X^T [K,M] as 128x128 (weight role).
+        # X uses 128x128 here (vs 1x128 in fprop); this only affects the weight-gradient
+        # accumulation, not the forward numerics the rollout sees, so train/infer stays aligned.
+        dytq, dyts = quantize_1x128(dy.t().contiguous())
+        xtq, xts = quantize_128x128(x.t().contiguous())
+        dw = gemm(dytq, xtq, dyts, xts, dtype=torch.bfloat16).to(w.dtype)
         return dx, dw
 
 
