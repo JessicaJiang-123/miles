@@ -296,11 +296,23 @@ def _patch_gemm():
         if swap:
             res = res.t().contiguous()
 
+        # aiter returns 2D [M,N]; Megatron/TE pass >2D activations [s,b,h] and expect the
+        # output to keep the activation's leading dims. Reshape to the 1x128 operand's
+        # leading dims when the row count matches (skip for a provided `out`).
+        if out is None:
+            act = A if a_sdim == 1 else B
+            lead = tuple(act.shape[:-1])
+            prod = 1
+            for d in lead:
+                prod *= d
+            if len(lead) != 1 and res.dim() == 2 and prod == res.shape[0]:
+                res = res.reshape(*lead, res.shape[-1]).contiguous()
+
         if bias is not None:
             res = res + bias.to(res.dtype)
         bias_grad = None
         if grad and bias is not None:
-            bias_grad = res.sum(dim=0).to(bias.dtype) if res.dim() == 2 else None
+            bias_grad = res.reshape(-1, res.shape[-1]).sum(dim=0).to(bias.dtype)
         if out is not None:
             # Honor Megatron's fused wgrad accumulation (out is main_grad, accumulate=True).
             res_c = res.to(out.dtype)

@@ -128,10 +128,10 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--train-memory-margin-bytes 3221225472 "
-        # The bias-dropout-add and bias-swiglu fusions are torch.compile/dynamo-traced
-        # (Megatron jit_fuser); tracing them over our aiter blockwise FP8 GEMM output hits a
-        # fake-tensor broadcast error ("output [.,.] doesn't match broadcast (.,.,.)"). The
-        # injector also calls disable_jit_fuser(); these flags are belt-and-suspenders.
+        # Keep the bias-dropout-add / bias-swiglu fusions eager (they are torch.compile'd
+        # via Megatron jit_fuser). Not strictly required after the GEMM output-rank fix, but
+        # avoids dynamo tracing over our aiter blockwise FP8 path. Injector also calls
+        # disable_jit_fuser().
         "--no-bias-dropout-fusion "
         "--no-bias-swiglu-fusion "
     )
