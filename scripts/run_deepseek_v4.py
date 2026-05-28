@@ -220,10 +220,16 @@ def _train(args: ScriptArgs):
         "--adam-beta2 0.98 "
     )
 
-    # Single-node smoke: TP=8, EP=8, SP on, no PP, no CP.
+    # Single-node smoke: TP=8, EP=8, no SP, no PP, no CP.
+    # Note: --sequence-parallel was removed -- under TP=8 SP, the model returns
+    # per-rank sequence-sharded logits, but `get_responses` indexes into them as
+    # if they were full-sequence, yielding empty log_probs on most ranks and the
+    # `ppo_kl = old_log_probs(128) - log_probs(0)` shape mismatch. Without SP,
+    # logits are full-sequence on every rank and the loss path works as-is.
+    # For training-step efficiency this is wasteful at scale, but for the smoke
+    # (4-layer model, small batch) it's fine.
     perf_args = (
         f"--tensor-model-parallel-size {args.num_gpus_per_node} "
-        "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
         f"--expert-model-parallel-size {args.num_gpus_per_node} "
