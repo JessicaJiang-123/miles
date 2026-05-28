@@ -38,7 +38,9 @@ def fake_generate_rollout(
             s = Sample.from_dict(proto.to_dict())
         else:
             s = proto
-        resp_len = min(16, max(4, args.rollout_max_response_len // 4))
+        # Need response_length >= TP-size * micro-batch-size so per-rank sequence-parallel
+        # slice is non-empty. The qwen3 smoke uses 100, and DSv4 smoke launches with TP=8.
+        resp_len = max(args.rollout_max_response_len // 2, 64)
         fake_tokens = [rng.randint(1000, 10000) for _ in range(resp_len)]
         s.tokens = list(s.tokens) + fake_tokens
         s.response = "fake response"
