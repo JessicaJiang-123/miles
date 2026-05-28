@@ -120,8 +120,8 @@ def main():
         hf_model_path = args.hf_checkpoint
         bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
 
-    bridge.load_weights(model, hf_model_path, memory_efficient=True)
-    print(f"Model loaded: {hf_model_path}")
+        bridge.load_weights(model, hf_model_path, memory_efficient=True)
+        print(f"Model loaded: {hf_model_path}")
 
     print_memory("after loading model")
     torch.cuda.synchronize()
