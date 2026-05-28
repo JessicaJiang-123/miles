@@ -1,0 +1,229 @@
+"""Standalone injector for ROCm/TE blockwise FP8 -> aiter, for Megatron Ray workers.
+
+The installed framework miles lives at /root/miles and is what workers import; we must
+NOT replace it. Instead this directory is prepended to PYTHONPATH (via the train job's
+extra_env_vars) and the sibling `sitecustomize.py` (auto-run at interpreter startup)
+registers a post-import hook that calls `apply()` here the moment
+`transformer_engine.pytorch` is imported -- i.e. before any TE module is built.
+
+This file is intentionally self-contained: it does NOT import `miles.*` (workers resolve
+`miles` to /root/miles, which doesn't have our code). It imports aiter + TE directly. The
+quant/GEMM logic is the same as miles/utils/rocm_te_blockwise.py, validated on MI355X.
+"""
+from __future__ import annotations
+
+import torch
+
+BLK = 128
+_APPLIED = False
+
+
+def _is_rocm() -> bool:
+    return getattr(torch.version, "hip", None) is not None
+
+
+def _aiter_bits():
+    from aiter.ops.triton.gemm.basic.gemm_a8w8_blockscale import gemm_a8w8_blockscale
+    from aiter.ops.triton.utils.types import get_fp8_dtypes
+
+    _, e4m3 = get_fp8_dtypes()
+    return gemm_a8w8_blockscale, e4m3, float(torch.finfo(e4m3).max)
+
+
+def quantize_1x128(x: torch.Tensor):
+    _, e4m3, fmax = _aiter_bits()
+    M, K = x.shape
+    xv = x.float().view(M, K // BLK, BLK)
+    scale = xv.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / fmax
+    xq = (xv / scale).clamp(-fmax, fmax).to(e4m3).view(M, K)
+    return xq, scale.squeeze(-1).contiguous()
+
+
+def quantize_128x128(w: torch.Tensor):
+    _, e4m3, fmax = _aiter_bits()
+    N, K = w.shape
+    wv = w.float().view(N // BLK, BLK, K // BLK, BLK)
+    scale = wv.abs().amax(dim=(1, 3), keepdim=True).clamp(min=1e-12) / fmax
+    wq = (wv / scale).clamp(-fmax, fmax).to(e4m3).view(N, K)
+    return wq, scale.view(N // BLK, K // BLK).contiguous()
+
+
+def _to_uint8(e4m3):
+    return e4m3.view(torch.uint8)
+
+
+def _from_uint8(u8, e4m3_dtype):
+    return u8.view(e4m3_dtype)
+
+
+def _patch_quantizer():
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import (
+        Float8BlockQuantizer,
+        Float8BlockwiseQTensor,
+    )
+    import transformer_engine_torch as tex
+    from transformer_engine_torch import DType as TE_DType
+
+    fp8_e4m3 = TE_DType.kFloat8E4M3
+
+    def _build_qtensor(self, tensor):
+        orig_shape = tuple(tensor.shape)
+        K = orig_shape[-1]
+        M = 1
+        for d in orig_shape[:-1]:
+            M *= d
+        x2d = tensor.reshape(M, K).contiguous()
+
+        rowwise_data = rowwise_scale = None
+        columnwise_data = columnwise_scale = None
+
+        if self.block_scaling_dim == 1:
+            if self.rowwise_usage:
+                q, s = quantize_1x128(x2d)
+                rowwise_data = _to_uint8(q).reshape(orig_shape).contiguous()
+                rowwise_scale = s.contiguous()
+            if self.columnwise_usage:
+                qc, sc = quantize_1x128(x2d.t().contiguous())
+                columnwise_data = _to_uint8(qc).contiguous()
+                columnwise_scale = sc.contiguous()
+        else:
+            if self.rowwise_usage:
+                q, s = quantize_128x128(x2d)
+                rowwise_data = _to_uint8(q).reshape(orig_shape).contiguous()
+                rowwise_scale = s.contiguous()
+            if self.columnwise_usage:
+                qc, sc = quantize_128x128(x2d.t().contiguous())
+                columnwise_data = _to_uint8(qc).contiguous()
+                columnwise_scale = sc.contiguous()
+
+        out = Float8BlockwiseQTensor(
+            shape=orig_shape,
+            dtype=tensor.dtype if tensor.dtype.is_floating_point else torch.bfloat16,
+            fp8_dtype=fp8_e4m3,
+            rowwise_data=rowwise_data,
+            rowwise_scale_inv=rowwise_scale,
+            columnwise_data=columnwise_data,
+            columnwise_scale_inv=columnwise_scale,
+            quantizer=self,
+            is_2D_scaled=self.block_scaling_dim == 2,
+            data_format=tex.Float8BlockScaleTensorFormat.GEMM_READY,
+            requires_grad=False,
+        )
+        out._aiter_block_scaling_dim = self.block_scaling_dim
+        return out
+
+    def quantize(self, tensor, *, out=None, dtype=None):
+        if out is not None:
+            return self.update_quantized(tensor, out)
+        return _build_qtensor(self, tensor)
+
+    def update_quantized(self, src, dst, *, noop_flag=None):
+        new = _build_qtensor(self, src)
+        dst._rowwise_data = new._rowwise_data
+        dst._rowwise_scale_inv = new._rowwise_scale_inv
+        dst._columnwise_data = new._columnwise_data
+        dst._columnwise_scale_inv = new._columnwise_scale_inv
+        dst._fp8_dtype = new._fp8_dtype
+        dst._data_format = new._data_format
+        dst._is_2D_scaled = new._is_2D_scaled
+        dst._aiter_block_scaling_dim = self.block_scaling_dim
+        return dst
+
+    Float8BlockQuantizer.quantize = quantize
+    Float8BlockQuantizer.update_quantized = update_quantized
+
+
+def _extract(t, e4m3_torch, *, columnwise):
+    if columnwise:
+        u8, s = t._columnwise_data, t._columnwise_scale_inv
+    else:
+        u8, s = t._rowwise_data, t._rowwise_scale_inv
+    data = _from_uint8(u8, e4m3_torch)
+    sdim = getattr(t, "_aiter_block_scaling_dim", 2 if t._is_2D_scaled else 1)
+    return data.reshape(-1, data.shape[-1]).contiguous(), s.contiguous(), sdim
+
+
+def _patch_gemm():
+    import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
+    from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
+        Float8BlockwiseQTensorBase,
+    )
+
+    aiter_gemm, e4m3_torch, _ = _aiter_bits()
+    _orig = gemm_mod.general_gemm
+
+    def general_gemm(
+        A, B, workspace, out_dtype=None, quantization_params=None, gelu=False,
+        gelu_in=None, alpha=1.0, beta=None, accumulate=False, layout="TN", out=None,
+        bias=None, use_split_accumulator=False, grad=False, ub=None, ub_type=None,
+        extra_output=None, bulk_overlap=False,
+    ):
+        if not (isinstance(A, Float8BlockwiseQTensorBase) and isinstance(B, Float8BlockwiseQTensorBase)):
+            return _orig(A, B, workspace, out_dtype, quantization_params, gelu, gelu_in,
+                         alpha, beta, accumulate, layout, out, bias, use_split_accumulator,
+                         grad, ub, ub_type, extra_output, bulk_overlap)
+
+        transa = layout[0] == "T"
+        transb = layout[1] == "T"
+        a_data, a_scale, a_sdim = _extract(A, e4m3_torch, columnwise=not transa)
+        b_data, b_scale, b_sdim = _extract(B, e4m3_torch, columnwise=transb)
+
+        if a_sdim == 1 and b_sdim == 2:
+            x_data, x_scale = a_data, a_scale
+            w_data, w_scale = b_data, b_scale
+            swap = True
+        elif b_sdim == 1 and a_sdim == 2:
+            x_data, x_scale = b_data, b_scale
+            w_data, w_scale = a_data, a_scale
+            swap = False
+        else:
+            x_data, x_scale = b_data, b_scale
+            w_data, w_scale = a_data, a_scale
+            swap = False
+
+        res = aiter_gemm(
+            x_data, w_data, x_scale, w_scale,
+            dtype=out_dtype if out_dtype is not None else torch.bfloat16,
+        )
+        if swap:
+            res = res.t().contiguous()
+        if bias is not None:
+            res = res + bias.to(res.dtype)
+        if out is not None:
+            out.copy_(res)
+            res = out
+        return res, None, None, None
+
+    gemm_mod.general_gemm = general_gemm
+    for modname in (
+        "transformer_engine.pytorch.module.linear",
+        "transformer_engine.pytorch.module.layernorm_linear",
+        "transformer_engine.pytorch.module.layernorm_mlp",
+        "transformer_engine.pytorch.module.grouped_linear",
+    ):
+        try:
+            import importlib
+            m = importlib.import_module(modname)
+            if hasattr(m, "general_gemm"):
+                m.general_gemm = general_gemm
+        except Exception:
+            pass
+
+
+def apply():
+    """Idempotently route ROCm/TE blockwise FP8 through aiter. Safe to call repeatedly."""
+    global _APPLIED
+    if _APPLIED:
+        return True
+    if not _is_rocm():
+        return False
+    import transformer_engine.pytorch.fp8 as _tefp8
+
+    _tefp8.check_fp8_block_scaling_support = lambda: (True, "")
+    _patch_quantizer()
+    _patch_gemm()
+    _APPLIED = True
+    import os
+    if os.environ.get("RANK", "0") in ("0", ""):
+        print("[rocm_te_blockwise_inject] aiter blockwise FP8 wired into TE", flush=True)
+    return True
