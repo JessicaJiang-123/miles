@@ -17,7 +17,15 @@ class _BFloat16LinearFP32Func(torch.autograd.Function):
         ctx.weight_dtype = weight.dtype
 
         x_2d = x_bf16.reshape(-1, x_bf16.shape[-1])
-        out = torch.mm(x_2d, weight_bf16.t(), out_dtype=torch.float32)
+        # ROCm hipBLASLt does not support BF16-in + FP32-out GEMM directly
+        # ("gemm input type at::BFloat16 and output type float is not supported
+        # for ROCm"). Upcast both inputs to fp32. Numerically equivalent to the
+        # cublas BF16xBF16->FP32 path (the BF16 mantissa truncation is already
+        # baked into x_bf16 and weight_bf16 above).
+        if torch.version.hip is not None:
+            out = torch.mm(x_2d.float(), weight_bf16.float().t())
+        else:
+            out = torch.mm(x_2d, weight_bf16.t(), out_dtype=torch.float32)
         return out.view(*x.shape[:-1], weight_bf16.shape[0])
 
     @staticmethod
