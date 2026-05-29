@@ -43,13 +43,22 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
 
 
-# --- Diagnostic-2 dump for layer outputs + final hidden (MILES_DSV4_DUMP) ---
-# hc_post_raw output == decoder-layer output (per layer); hc_head_raw output ==
-# final hidden after all layers (pre final-layernorm/lm_head). Tagged by a global
-# call counter so the 4 layers (8 hc_post calls: attn+ffn per layer) and the
-# single hc_head call are distinguishable. fp32 CPU, rank-0-keyed, once per tag.
+# --- Diag-3 disk-safe component dump (MILES_DSV4_DUMP=/tmp/dsv4dbg/x) ---
+# DISK DISCIPLINE: dedup by an exact tag string in a module-level set(), so each
+# tag is written AT MOST ONCE per process; rank-0 only. The prior counter-based
+# hc_post{N} dump (commit c732bc6) is REMOVED -- it wrote ~1160 files because the
+# counter never reset across recompute/microbatch forwards.
+#
+# layer_pre/layer_post are each called twice per decoder layer:
+#   pre  call idx 0 -> attn sublayer,  idx 1 -> ffn (MoE) sublayer (layer 0)
+#   post call idx 0 -> attn sublayer,  idx 1 -> ffn (MoE) sublayer (layer 0)
+# We dump ONLY the layer-0 FFN sublayer (pre/post call index 1) three tensors:
+#   mlp_input       = hidden_states out of FFN layer_pre (HC-pre, into MoE)
+#   moe_output      = MoE/MLP raw output, into hc_post_raw (before HC-post)
+#   hc_post_output  = result of hc_post_raw (after sinkhorn accumulate)
 _DSV4_HC_DUMP_SEEN = set()
-_DSV4_HC_POST_COUNT = 0
+_DSV4_PRE_CALLS = 0   # number of layer_pre invocations so far this process
+_DSV4_POST_CALLS = 0  # number of layer_post invocations so far this process
 
 
 def _dsv4_hc_dump(tag, tensor):
@@ -62,19 +71,16 @@ def _dsv4_hc_dump(tag, tensor):
         rank = dist.get_rank() if dist.is_initialized() else 0
     except Exception:
         rank = 0
-    # Disk-frugal: rank-0 only (the hidden state is TP-replicated for these
-    # layer-output/final-hidden tensors, so rank 0 is representative), and only
-    # the first occurrence of each tag (first forward, layers in order).
     if rank != 0:
         return
-    key = (tag, rank)
-    if key in _DSV4_HC_DUMP_SEEN:
+    if tag in _DSV4_HC_DUMP_SEEN:
         return
-    _DSV4_HC_DUMP_SEEN.add(key)
+    _DSV4_HC_DUMP_SEEN.add(tag)
     try:
         torch.save(tensor.detach().float().cpu(), f"{prefix}.miles.{tag}.r{rank}.pt")
+        print(f"[dsv4-dbg] wrote {prefix}.miles.{tag}.r{rank}.pt shape={tuple(tensor.shape)}")
     except Exception as e:  # noqa: BLE001
-        print(f"[dsv4-hc-dump] failed {tag}: {e}")
+        print(f"[dsv4-dbg] failed {tag}: {e}")
 
 
 # DeepSeek-V4 post-layer mixer factor (matches sglang `hc_post_mult_value=2.0`).
@@ -230,9 +236,6 @@ class DeepSeekV4HyperConnectionUtil:
         # comb @ residual:  einsum('bsjk,bskh->bsjh', comb, residual)
         term_res = torch.einsum("bsjk,bskh->bsjh", comb_fp32, residual_fp32)
         out = (term_x + term_res).to(dtype)
-        global _DSV4_HC_POST_COUNT
-        _dsv4_hc_dump(f"hc_post{_DSV4_HC_POST_COUNT}", out)
-        _DSV4_HC_POST_COUNT += 1
         return out
 
     def hc_head_raw(
@@ -265,7 +268,6 @@ class DeepSeekV4HyperConnectionUtil:
         x_per_token = x_flat_fp32.view(b * s, hc, hidden)
         layer_input = (pre.unsqueeze(-1) * x_per_token).sum(dim=1)  # (n, hidden)
         out = layer_input.view(b, s, hidden).to(dtype)
-        _dsv4_hc_dump("final_hidden", out)  # post-all-layers, pre final-layernorm
         return out
 
     def layer_pre(
@@ -282,6 +284,11 @@ class DeepSeekV4HyperConnectionUtil:
         x = einops.rearrange(hidden_states, "s b hc d -> b s hc d")
         x, post, comb = self.hc_pre_raw(x=x, hc_fn=hc_fn, hc_scale=hc_scale, hc_base=hc_base)
         hidden_states = einops.rearrange(x, "b s d -> s b d")
+        # Diag-3: layer-0 FFN sublayer is pre-call index 1 (idx 0 = layer-0 attn).
+        global _DSV4_PRE_CALLS
+        if _DSV4_PRE_CALLS == 1:
+            _dsv4_hc_dump("L0.mlp_input", hidden_states)
+        _DSV4_PRE_CALLS += 1
         return hidden_states, post, comb
 
     def layer_post(
@@ -300,7 +307,14 @@ class DeepSeekV4HyperConnectionUtil:
 
         out = einops.rearrange(out, "s b d -> b s d")
         residual_bshd = einops.rearrange(residual, "s b hc d -> b s hc d")
+        # Diag-3: layer-0 FFN sublayer is post-call index 1 (idx 0 = layer-0 attn).
+        global _DSV4_POST_CALLS
+        if _DSV4_POST_CALLS == 1:
+            _dsv4_hc_dump("L0.moe_output", out)  # MoE/MLP raw output, before HC-post
         hidden_states = self.hc_post_raw(x=out, residual=residual_bshd, post=post, comb=comb)
+        if _DSV4_POST_CALLS == 1:
+            _dsv4_hc_dump("L0.hc_post_output", hidden_states)  # after sinkhorn accumulate
+        _DSV4_POST_CALLS += 1
         return einops.rearrange(hidden_states, "b s hc d -> s b hc d")
 
     def block_expand(self, hidden_states: Tensor) -> Tensor:
