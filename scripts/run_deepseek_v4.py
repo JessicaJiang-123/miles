@@ -308,6 +308,17 @@ def _train(args: ScriptArgs):
         # + policy_loss_debug/rank_{rank}_call_{counter}.pt).
         "--dump-details /tmp/dsv4-real/dump "
     )
+    if args.real_rollout:
+        # H5 test: enable Rollout Routing Replay (R3) so training-side recompute
+        # uses sglang's MoE expert choices (rather than re-running its own router
+        # whose output may diverge due to numerical differences). This is the
+        # standard mitigation for MoE train-rollout mismatch (see
+        # https://arxiv.org/abs/2510.11370) and is enabled in every other miles
+        # MoE launcher (glm4.7-flash, qwen3-30B-A3B, nemotron-3-nano-30b-a3b,
+        # qwen3-5-35B). DSv4 has 256 experts + per-token routing, so this is
+        # likely the dominant source of the train-rollout logprob diff.
+        misc_args += "--use-rollout-routing-replay "
+    misc_args += " "
 
     if args.real_rollout:
         # REAL sglang rollout (via sglang fork on PYTHONPATH). The default
