@@ -395,23 +395,22 @@ def _train(args: ScriptArgs):
             "--use-rollout-logprobs "
         )
 
-    # Blockwise FP8 training via our aiter-backed TE patch.
-    # H3 test: when args.real_rollout, DISABLE FP8 training to isolate FP8 train
-    # vs FP8 infer drift as the cause of train_rollout_logprob_abs_diff ~ 11.
-    # The torch_dist checkpoint stores BF16 weights (no FP8 scales for activations
-    # baked in), so a pure-BF16 training forward is well-defined; sglang still
-    # serves FP8 inference. If the diff stays ~11 with BF16 training, FP8 is NOT
-    # the dominant cause and the bug is in the Megatron DSv4 forward path itself.
+    # Blockwise FP8 training (DeepSeek-style: forward FP8, master/backward BF16)
+    # via our aiter-backed TE patch (miles/utils/te_inject_site/rocm_te_blockwise_inject.py).
+    # Matches the rollout's FP8 blockwise serving so both engines walk the same
+    # forward precision — Mode 2 ("Unified block-wise FP8") of docs/advanced/
+    # fp8-low-precision.md, brought to AMD MI350/MI355X. The H3 diagnostic that
+    # used to gate FP8 off under --real-rollout is removed: that gate kept
+    # training in BF16 while sglang served FP8, which surfaced as the expected
+    # ~11.2 train_rollout_logprob_abs_diff on the 4-of-43-layer prune smoke
+    # (Mode 1 drift, documented as the failure mode this feature fixes).
     misc_args += (
         "--transformer-impl transformer_engine "
         "--bf16 "
+        "--fp8-format e4m3 "
+        "--fp8-recipe blockwise "
+        # NO --fp8-param-gather (asserted to require delayed recipe).
     )
-    if not args.real_rollout:
-        misc_args += (
-            "--fp8-format e4m3 "
-            "--fp8-recipe blockwise "
-            # NO --fp8-param-gather (asserted to require delayed recipe).
-        )
 
     # PYTHONPATH chain: injector -> our worktree root -> yueming-megatron (DSv4)
     # -> [optionally] sglang fork (DSv4 model + configs) for real rollout.
@@ -530,7 +529,7 @@ def _train(args: ScriptArgs):
     # Diagnostic passthrough: dense-MLA swap (Diag-1) and per-layer activation
     # dump (Diag-2) for the train-rollout logprob-diff investigation. Forward the
     # host env into the Ray workers so they can be flipped without editing code.
-    for _diag_var in ("MILES_DSV4_DENSE_ATTN", "MILES_DSV4_DUMP", "MILES_DSV4_DUMP_LAYERS"):
+    for _diag_var in ("MILES_DSV4_DENSE_ATTN", "MILES_DSV4_DUMP", "MILES_DSV4_DUMP_LAYERS", "MILES_DSV4_DIAG_SKIP_DETERM"):
         _v = _os.environ.get(_diag_var)
         if _v:
             extra_env_vars[_diag_var] = _v

@@ -141,10 +141,12 @@ def validate_args(args):
     if hasattr(args, "sglang_attention_context_parallel_size"):
         args.sglang_attn_cp_size = args.sglang_attention_context_parallel_size
 
-    if args.true_on_policy_mode:
+    import os as _os_diag
+    _diag_skip_determ = _os_diag.environ.get("MILES_DSV4_DIAG_SKIP_DETERM", "0") == "1"
+    if args.true_on_policy_mode and not _diag_skip_determ:
         args.sglang_enable_deterministic_inference = True
 
-    if getattr(args, "recompute_logprobs_via_prefill", False):
+    if getattr(args, "recompute_logprobs_via_prefill", False) and not _diag_skip_determ:
         args.sglang_enable_prefill_only_deterministic_inference = True
         args.sglang_enable_deterministic_inference = True
 
