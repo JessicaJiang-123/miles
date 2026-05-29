@@ -318,6 +318,16 @@ def _train(args: ScriptArgs):
         # qwen3-5-35B). DSv4 has 256 experts + per-token routing, so this is
         # likely the dominant source of the train-rollout logprob diff.
         misc_args += "--use-rollout-routing-replay "
+        # The Rust sglang_router (0.3.2) deserializes /generate JSON into a
+        # fixed GenerateRequest struct that does NOT include
+        # `return_routed_experts`, so it gets silently dropped on the way to
+        # the sglang engine and the server's enable_return_routed_experts
+        # capturer never fires per-request. Switch to MilesRouter (a Python
+        # pass-through proxy in miles/router/router.py) which forwards the
+        # request body verbatim, preserving unknown fields. Verified by
+        # comparing R3-HTTP-DEBUG (server-side raw body) with R3-PAYLOAD-DEBUG
+        # (miles-side payload keys).
+        misc_args += "--use-miles-router "
     misc_args += " "
 
     if args.real_rollout:
