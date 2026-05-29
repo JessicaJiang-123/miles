@@ -393,7 +393,23 @@ def _train(args: ScriptArgs):
                 "SGLANG_OPT_USE_JIT_KERNEL_FUSED_TOPK": "false",
                 "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "false",
                 "SGLANG_OPT_DPSK_V4_RADIX": "1",
-                "SGLANG_OPT_FUSE_WQA_WKV": "true",
+                # Disable the SGLang fused-wqa+wkv parameter ("wqkv_a"). With
+                # FUSE_WQA_WKV=true SGLang's load_weights expects BOTH the wq_a
+                # and wkv halves to arrive in the same load_weights() call
+                # (cache_wqkv_a_weight is a local var) so the two halves can be
+                # cat'd into the fused "wqkv_a.weight" parameter. miles' refit
+                # path buckets parameters by byte budget, which means wq_a and
+                # wkv for the same layer may straddle a bucket boundary -- the
+                # second half lands in the next load_weights() call, the cache
+                # is reset, and the assertion `len(cache_wqkv_a_weight) == 0`
+                # fires (AssertionError: dict_keys(['model.layers.N.self_attn.
+                # wqkv_a.weight'])). Disabling the fusion makes SGLang build
+                # separate wq_a / wkv ReplicatedLinears (one matmul becomes
+                # two; functionally equivalent, slightly slower) which match
+                # what miles' bridge already emits. Re-enable once miles' refit
+                # is taught to keep paired params in the same bucket OR the
+                # SGLang side persists cache_wqkv_a_weight across calls.
+                "SGLANG_OPT_FUSE_WQA_WKV": "false",
                 "SGLANG_FORCE_TRITON_MOE_FP8": "0",
                 "SGLANG_ENABLE_THINKING": "1",
                 "SGLANG_REASONING_EFFORT": "max",
