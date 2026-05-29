@@ -33,9 +33,16 @@ def _aiter_bits():
 def quantize_1x128(x: torch.Tensor):
     _, e4m3, fmax = _aiter_bits()
     M, K = x.shape
-    xv = x.float().view(M, K // BLK, BLK)
+    # Pad the (1x128-)blocked last dim to a multiple of 128 with zeros. The padded
+    # entries quantize to 0 and contribute 0 in the block-scaled GEMM contraction, so
+    # results are unchanged; this lets dynamic dims (e.g. per-expert token counts in the
+    # MoE wgrad's columnwise quant) that aren't multiples of 128 work without a kernel fork.
+    Kp = ((K + BLK - 1) // BLK) * BLK
+    if Kp != K:
+        x = torch.nn.functional.pad(x, (0, Kp - K))
+    xv = x.float().view(M, Kp // BLK, BLK)
     scale = xv.abs().amax(dim=-1, keepdim=True).clamp(min=1e-12) / fmax
-    xq = (xv / scale).clamp(-fmax, fmax).to(e4m3).view(M, K)
+    xq = (xv / scale).clamp(-fmax, fmax).to(e4m3).view(M, Kp)
     return xq, scale.squeeze(-1).contiguous()
 
 
@@ -444,12 +451,23 @@ def _patch_grouped_gemm():
         grad_bias = []
         off = 0
         for i in range(n):
+            m_i = m_splits[i] if m_splits is not None else None
             if out_list is not None:
                 out_i = out_list[i]
             else:
-                m_i = m_splits[i]
                 out_i = concat[off:off + m_i]
                 off += m_i
+            # Empty expert (0 tokens routed this microbatch): the per-group GEMM
+            # contracts over the token dim, so a 0-token group has a 0-sized operand
+            # (columnwise quantize -> data [K, 0] -> reshape(-1, 0) is ambiguous). The
+            # math contribution is zero: for wgrad, leave the accumulated main_grad
+            # untouched (accumulate=True) or zero the fresh wgrad buffer; for
+            # fprop/dgrad the output slice is empty so there is nothing to write.
+            if m_i == 0:
+                if out_list is not None and out_i is not None and not accumulate:
+                    out_i.zero_()
+                grad_bias.append(None)
+                continue
             res, bgrad, _, _ = gemm_mod.general_gemm(
                 A[i], B[i], workspaces[i % nws],
                 out_dtype=(out_i.dtype if out_i is not None else out_dtype),
