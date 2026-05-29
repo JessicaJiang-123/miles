@@ -381,10 +381,56 @@ def _dsv4_attention_module_spec(config, backend=None):
     )
 
 
+_DSV4_MOE_DUMP_PATCHED = False
+
+
+def _install_moe_postprocess_dump():
+    """Diag-3b: dump layer-0 routed (post-combine) vs shared-expert outputs of the
+    MoE separately, to localize which MoE sub-path produces the moe_output outlier.
+
+    DISK-SAFE: only fires when MILES_DSV4_DUMP is set, layer 0 (layer_number==1,
+    1-indexed in megatron), rank 0, deduped by exact tag in _DSV4_DUMP_SEEN. At
+    most 2 extra files. Monkeypatches megatron MoELayer.postprocess in-process so
+    no megatron edit is needed (megatron is not in our push scope)."""
+    global _DSV4_MOE_DUMP_PATCHED
+    if _DSV4_MOE_DUMP_PATCHED:
+        return
+    _DSV4_MOE_DUMP_PATCHED = True
+    try:
+        from megatron.core.transformer.moe.moe_layer import MoELayer
+    except Exception:
+        return
+    _orig_postprocess = MoELayer.postprocess
+
+    def _patched_postprocess(self, output, shared_expert_output):
+        result = _orig_postprocess(self, output, shared_expert_output)
+        try:
+            import torch.distributed as _dist
+            _rank = _dist.get_rank() if _dist.is_initialized() else 0
+        except Exception:
+            _rank = 0
+        if os.environ.get("MILES_DSV4_DUMP") and getattr(self, "layer_number", None) == 1 and _rank == 0:
+            # `output` (post combine_postprocess) is the routed-expert contribution;
+            # result == routed + shared. Recover routed-only as result - shared.
+            try:
+                from megatron.core.transformer.moe.moe_layer import MoELayer as _ML  # noqa
+                _dsv4_dump("moe_routed_only", result if shared_expert_output is None
+                           else (result.float() - shared_expert_output.float()), 0)
+                if shared_expert_output is not None:
+                    _dsv4_dump("moe_shared_only", shared_expert_output, 0)
+                _dsv4_dump("moe_combined", result, 0)
+            except Exception as e:  # noqa: BLE001
+                print(f"[dsv4-dbg] moe postprocess dump failed: {e}")
+        return result
+
+    MoELayer.postprocess = _patched_postprocess
+
+
 def get_dsv4_spec(args, config, vp_stage):
     """
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
+    _install_moe_postprocess_dump()
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):
