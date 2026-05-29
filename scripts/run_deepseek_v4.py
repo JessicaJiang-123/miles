@@ -215,14 +215,14 @@ def _train(args: ScriptArgs):
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     hf_checkpoint = args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
-    if args.bf16_rollout:
-        # Decisive experiment: serve the rollout in BF16. Point hf_checkpoint at
-        # the bf16-config dir (quantization_config stripped) so the rollout
-        # sglang ModelConfig keeps quantization=None and builds BF16 MoE modules.
-        # Training weights still come from --ref-load (the bf16 torch_dist), and
-        # the bf16-config dir's config.json is otherwise identical (same arch,
-        # 4 layers, same tokenizer), so the AutoBridge config read is unaffected.
-        hf_checkpoint = f"{args.model_dir}/{args.bf16_rollout_cfg_name}"
+    # NOTE on --bf16-rollout: we keep hf_checkpoint at the FP8 dir (so sglang's
+    # attention/compressor path stays fp8 -- stripping quantization_config from
+    # the config unquantizes the attention wkv/wq_a linears, which are still fed
+    # an fp8 activation tuple by the compressor -> 'tuple' has no attribute
+    # 'dtype'). Instead, SGLANG_DSV4_BF16_MOE=1 (set below) forces ONLY the
+    # routed-expert MoE to bf16, which is where the diagnosed train/rollout
+    # divergence lives (layer-0 moe_output). The bf16 expert weights arrive via
+    # the Megatron->sglang refit (load_format=dummy skips the on-disk fp8 load).
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load {args.model_dir}/{args.torch_dist_name} "
@@ -436,6 +436,13 @@ def _train(args: ScriptArgs):
         # sglang reads the on-disk config.json.
         "SGLANG_APPLY_CONFIG_BACKUP": "none",
     }
+    if args.bf16_rollout:
+        # DECISIVE EXPERIMENT: force the rollout sglang's routed-expert MoE to
+        # BF16 (attention stays fp8). See deepseek_v4.py _DSV4_BF16_MOE. Combined
+        # with --sglang-load-format dummy (set above), the experts are bf16
+        # modules filled by the Megatron->sglang refit with the same bf16 weights
+        # training uses -> isolates fp8-expert-weight-quant gap vs prune floor.
+        extra_env_vars["SGLANG_DSV4_BF16_MOE"] = "1"
     if args.real_rollout:
         # Enable the transformers 5.x rope_parameters -> rope_theta backfill so
         # the sglang fork's deepseek_v4 model can read config.rope_theta.
