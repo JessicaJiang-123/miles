@@ -93,6 +93,24 @@ def convert_deepseekv4_to_hf(args, name, param):
         elif rest == "self_attention.wo_b.weight":
             return [(f"model.layers.{layer_idx}.self_attn.wo_b.weight", param)]
         elif rest == "self_attention.attn_sink":
+            # miles stores attn_sink TP-sharded along the head dim ([n_local_heads] per
+            # rank, axis 0 in tensor_parallel_layers_axis_map). sglang's DSv4 on AMD
+            # uses DP attention and expects attn_sink REPLICATED ([n_heads], its own
+            # code comments "should be replicated"). All-gather across the TP group
+            # before exporting so the Megatron->sglang weight refit hands sglang the
+            # full tensor matching its parameter shape -- otherwise the bridge crashes
+            # with `Attempted to load weight ([n_local_heads]) into parameter ([n_heads])`.
+            from megatron.core import parallel_state
+            tp_size = parallel_state.get_tensor_model_parallel_world_size()
+            if tp_size > 1:
+                tp_group = parallel_state.get_tensor_model_parallel_group()
+                gathered = torch.empty(
+                    param.shape[0] * tp_size, dtype=param.dtype, device=param.device
+                )
+                torch.distributed.all_gather_into_tensor(
+                    gathered, param.contiguous(), group=tp_group
+                )
+                param = gathered
             return [(f"model.layers.{layer_idx}.self_attn.attn_sink", param)]
 
         elif rest == "self_attention.compressor.ape":
