@@ -385,6 +385,94 @@ def _patch_gather():
                     pass
 
 
+
+def _patch_split_quantize():
+    """MoE GroupedLinear quantizes inputs/grads via tex.split_quantize, a fused C++ grouped
+    quantize whose HIP blockwise path is unimplemented ("Not implemented scaling mode").
+    Route each split through the (already-patched) Float8BlockQuantizer.quantize -> aiter."""
+    import transformer_engine_torch as tex
+    from transformer_engine.pytorch.tensor.float8_blockwise_tensor import Float8BlockQuantizer
+
+    _orig = tex.split_quantize
+
+    def split_quantize(inp, split_sections, quantizers):
+        if quantizers and all(isinstance(q, Float8BlockQuantizer) for q in quantizers):
+            outs = []
+            off = 0
+            for sec, q in zip(split_sections, quantizers):
+                outs.append(q.quantize(inp[off:off + sec].contiguous()))
+                off += sec
+            return outs
+        return _orig(inp, split_sections, quantizers)
+
+    tex.split_quantize = split_quantize
+
+
+def _patch_grouped_gemm():
+    """MoE GroupedLinear grouped GEMM (fprop/dgrad/wgrad): route each group through the
+    (already-patched) general_gemm -> aiter gemm_a8w8_blockscale. Handles both a single
+    concatenated output tensor (fprop/dgrad, sliced by m_splits) and a per-expert list
+    (wgrad)."""
+    import torch
+    import transformer_engine.pytorch.cpp_extensions.gemm as gemm_mod
+    from transformer_engine.pytorch.tensor._internal.float8_blockwise_tensor_base import (
+        Float8BlockwiseQTensorBase,
+    )
+
+    _orig = gemm_mod.general_grouped_gemm
+
+    def general_grouped_gemm(A, B, out, out_dtype, workspaces, layout="TN", m_splits=None,
+                             gelu=False, grad=False, accumulate=False, bias=None,
+                             use_bias=False, use_split_accumulator=False, D_dtype=None,
+                             single_output=False):
+        a_blk = len(A) > 0 and isinstance(A[0], Float8BlockwiseQTensorBase)
+        b_blk = len(B) > 0 and isinstance(B[0], Float8BlockwiseQTensorBase)
+        if not (a_blk and b_blk):
+            return _orig(A, B, out, out_dtype, workspaces, layout, m_splits, gelu, grad,
+                         accumulate, bias, use_bias, use_split_accumulator, D_dtype,
+                         single_output)
+        # out can be: a single concatenated tensor [sum(m_splits), N] (single_output);
+        # a per-group list of length num_gemms; or a 1-element list wrapping the concat.
+        n = len(A)
+        if isinstance(out, torch.Tensor):
+            out_list, concat = None, out
+        elif isinstance(out, (list, tuple)) and len(out) == n:
+            out_list, concat = list(out), None
+        else:  # 1-element (or single_output) list wrapping a concatenated tensor
+            out_list, concat = None, out[0]
+        nws = len(workspaces)
+        grad_bias = []
+        off = 0
+        for i in range(n):
+            if out_list is not None:
+                out_i = out_list[i]
+            else:
+                m_i = m_splits[i]
+                out_i = concat[off:off + m_i]
+                off += m_i
+            res, bgrad, _, _ = gemm_mod.general_gemm(
+                A[i], B[i], workspaces[i % nws],
+                out_dtype=(out_i.dtype if out_i is not None else out_dtype),
+                layout=layout,
+                out=out_i,
+                bias=(bias[i] if (use_bias and bias) else None),
+                accumulate=accumulate,
+                grad=grad,
+                use_split_accumulator=use_split_accumulator,
+            )
+            grad_bias.append(bgrad)
+        return out, (grad_bias if grad else bias), [None] * len(A)
+
+    gemm_mod.general_grouped_gemm = general_grouped_gemm
+    # GroupedLinear imports general_grouped_gemm by name into its module namespace.
+    try:
+        import transformer_engine.pytorch.module.grouped_linear as _gl
+        if getattr(_gl, "general_grouped_gemm", None) is _orig:
+            _gl.general_grouped_gemm = general_grouped_gemm
+    except Exception:
+        pass
+
+
 def apply():
     """Idempotently route ROCm/TE blockwise FP8 through aiter. Safe to call repeatedly."""
     global _APPLIED
@@ -397,6 +485,8 @@ def apply():
     _tefp8.check_fp8_block_scaling_support = lambda: (True, "")
     _patch_quantizer()
     _patch_gemm()
+    _patch_split_quantize()
+    _patch_grouped_gemm()
     _patch_norm()
     _patch_gather()
     # Disable Megatron's jit_fuser (torch.compile). It decorates the bias-dropout-add and
