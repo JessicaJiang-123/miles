@@ -2194,6 +2194,15 @@ def miles_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
+    if args.use_rollout_indexer_replay:
+        # Mirror the routing-replay handshake: --use-rollout-indexer-replay
+        # only fills replay data from the rollout response; the per-module
+        # interception that actually CONSUMES the replay (V4Indexer.forward's
+        # topk_fn) is gated by m.enabled in actor.py, which is keyed off
+        # args.use_indexer_replay (line 111 of actor.py). Auto-set it so the
+        # launcher only needs the single --use-rollout-indexer-replay flag.
+        args.use_indexer_replay = True
+
     if args.custom_config_path:
         with open(args.custom_config_path) as f:
             data = yaml.safe_load(f) or {}
