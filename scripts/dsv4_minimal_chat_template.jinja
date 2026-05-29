@@ -1,0 +1,15 @@
+{#- Minimal chat template for DeepSeek-V4-Flash-FP8 smoke testing on dapo-math-17k. -#}
+{#- The Pinaster DSv4 tokenizer doesn't ship a chat_template; without one the   -#}
+{#- rollout's `tokenizer.encode(sample.prompt, ...)` crashes because the dapo   -#}
+{#- prompts are list[dict] ([{role: user, content: ...}]). This template just   -#}
+{#- joins each message's content with a newline and appends a generation marker -#}
+{#- when add_generation_prompt is True. It is NOT the official DSv4 chat        -#}
+{#- format -- it is only there to make the rollout produce *something* tokenize-able-#}
+{#- so a single GRPO step can complete end-to-end (reward correctness is        -#}
+{#- non-goal for the real-rollout smoke).                                       -#}
+{%- for message in messages -%}
+{{ message['content'] }}
+{% endfor -%}
+{%- if add_generation_prompt -%}
+
+{%- endif -%}

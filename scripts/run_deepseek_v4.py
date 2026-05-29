@@ -208,9 +208,18 @@ def _train(args: ScriptArgs):
             "--save-retain-interval 20 "
         )
 
-    # Rollout args are required by the parser. We override the real rollout function
-    # with miles.rollout.fake_rollout.fake_generate_rollout (set in misc_args below).
-    # No --apply-chat-template: the Pinaster DSv4 tokenizer doesn't ship one.
+    # Rollout args are required by the parser. Under --debug-train-only we
+    # override the real rollout function with fake_rollout (set in misc_args
+    # below); under --real-rollout the sglang DSv4 server handles generation.
+    #
+    # dapo-math-17k.jsonl ships prompts as list[{"role": "user", "content": str}]
+    # (chat format), so the rollout MUST run them through tokenizer.apply_chat_template
+    # before calling tokenizer.encode() -- otherwise transformers raises
+    # `ValueError: text input must be of type str ...`. The Pinaster DSv4
+    # tokenizer doesn't ship a chat_template, so we point --chat-template-path
+    # at a minimal jinja template (just joins each message's content) for the
+    # smoke. NOT the official DSv4 chat format; only here so the rollout
+    # produces *something* tokenize-able so the GRPO step can complete.
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
@@ -225,6 +234,8 @@ def _train(args: ScriptArgs):
         "--global-batch-size 32 "
         "--balance-data "
         "--num-epoch 1 "
+        "--apply-chat-template "
+        f"--chat-template-path {WORKTREE_ROOT}/scripts/dsv4_minimal_chat_template.jinja "
     )
 
     grpo_args = (
