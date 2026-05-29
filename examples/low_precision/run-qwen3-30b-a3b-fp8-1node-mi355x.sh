@@ -17,6 +17,10 @@ pkill -9 ray; pkill -9 python
 
 set -ex
 export PYTHONBUFFERED=16
+# ROCm: aiter fused_moe blockscale MoE kernel faults (GPU memory access fault) on MI355X
+# under colocate memory-saver pause/resume; use the Triton MoE path instead (matches the
+# validated AMD path, cf. miles PR #727). aiter all-reduce/etc. unaffected by rollout.
+export SGLANG_USE_AITER=0
 
 # ROCm: no NVLink; HAS_NVLINK gates NCCL_NVLS which is NV-only.
 HAS_NVLINK=0
