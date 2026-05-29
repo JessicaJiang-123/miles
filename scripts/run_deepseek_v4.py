@@ -235,7 +235,13 @@ def _train(args: ScriptArgs):
         "--balance-data "
         "--num-epoch 1 "
         "--apply-chat-template "
-        f"--chat-template-path {WORKTREE_ROOT}/scripts/dsv4_minimal_chat_template.jinja "
+        # H1 test: use DSv3 chat template (deepseek-ai canonical). DSv4's tokenizer
+        # ships <｜User｜>, <｜Assistant｜>, <｜begin▁of▁sentence｜> tokens (vocab IDs
+        # 128803, 128804, 0) — same as DSv3 — so the v3 template tokenizes cleanly.
+        # The minimal template produced gibberish generations because the model has
+        # no idea this is a chat (it's a base model with no chat template). The v3
+        # template gives explicit "<｜User｜>...<｜Assistant｜>" framing.
+        f"--chat-template-path {WORKTREE_ROOT}/scripts/dsv3_chat_template.jinja "
     )
 
     grpo_args = (
