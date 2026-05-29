@@ -332,13 +332,22 @@ def _train(args: ScriptArgs):
         )
 
     # Blockwise FP8 training via our aiter-backed TE patch.
+    # H3 test: when args.real_rollout, DISABLE FP8 training to isolate FP8 train
+    # vs FP8 infer drift as the cause of train_rollout_logprob_abs_diff ~ 11.
+    # The torch_dist checkpoint stores BF16 weights (no FP8 scales for activations
+    # baked in), so a pure-BF16 training forward is well-defined; sglang still
+    # serves FP8 inference. If the diff stays ~11 with BF16 training, FP8 is NOT
+    # the dominant cause and the bug is in the Megatron DSv4 forward path itself.
     misc_args += (
         "--transformer-impl transformer_engine "
         "--bf16 "
-        "--fp8-format e4m3 "
-        "--fp8-recipe blockwise "
-        # NO --fp8-param-gather (asserted to require delayed recipe).
     )
+    if not args.real_rollout:
+        misc_args += (
+            "--fp8-format e4m3 "
+            "--fp8-recipe blockwise "
+            # NO --fp8-param-gather (asserted to require delayed recipe).
+        )
 
     # PYTHONPATH chain: injector -> our worktree root -> yueming-megatron (DSv4)
     # -> [optionally] sglang fork (DSv4 model + configs) for real rollout.
