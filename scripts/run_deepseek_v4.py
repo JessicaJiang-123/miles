@@ -56,12 +56,13 @@ TE_INJECT_SITE = f"{WORKTREE_ROOT}/miles/utils/te_inject_site"
 # Yueming's Megatron-LM fork (deepseek-v4 branch); cloned outside any worktree at
 # host /mnt/data/data/hai/yueming-megatron -> container /data/data/hai/yueming-megatron.
 YUEMING_MEGATRON = "/data/data/hai/yueming-megatron"
-# Yueming's sglang fork (deepseek_v4 branch). Cloned at host
-# /mnt/data/data/hai/yueming-sglang -> container /data/data/hai/yueming-sglang.
+# Jessica's sglang fork (miles-dsv4-fp8-blockwise branch, based on
+# upstream/amd/deepseek_v4 + 9 amd shims). Cloned at host
+# /mnt/data/data/hai/sglang -> container /data/data/hai/sglang.
 # Python layer only; we keep miles-hai2's container-installed sgl_kernel/aiter as-is
-# (AMD-native compiled extensions), and PYTHONPATH-prepend yueming's Python so DSv4
+# (AMD-native compiled extensions), and PYTHONPATH-prepend this Python so DSv4
 # model + config + sites load.
-YUEMING_SGLANG_PY = "/data/data/hai/yueming-sglang/python"
+YUEMING_SGLANG_PY = "/data/data/hai/sglang/python"
 
 
 @dataclass
@@ -83,7 +84,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # debug configs
     skip_saving: bool = True
     extra_args: str = ""
-    # Flip to True to use REAL sglang DSv4 rollout (yueming-sglang prepended on PYTHONPATH),
+    # Flip to True to use REAL sglang DSv4 rollout (sglang fork prepended on PYTHONPATH),
     # instead of miles.rollout.fake_rollout.fake_generate_rollout. Required for any
     # convergence run, and for surfacing real-rollout-only bugs (Megatron->sglang weight
     # bridge, etc) that fake_rollout hid.
@@ -286,7 +287,7 @@ def _train(args: ScriptArgs):
     )
 
     if args.real_rollout:
-        # REAL sglang rollout (via yueming-sglang on PYTHONPATH). The default
+        # REAL sglang rollout (via sglang fork on PYTHONPATH). The default
         # --rollout-function-path is miles.rollout.sglang_rollout.generate_rollout
         # so no explicit override needed.
         pass
@@ -317,13 +318,13 @@ def _train(args: ScriptArgs):
     )
 
     # PYTHONPATH chain: injector -> our worktree root -> yueming-megatron (DSv4)
-    # -> [optionally] yueming-sglang (DSv4 model + configs) for real rollout.
+    # -> [optionally] sglang fork (DSv4 model + configs) for real rollout.
     # (worktree FIRST so its miles/* shadows the editable install at /root/miles,
     # which is missing DSv4 patches; megatron_path AFTER so we still pick our
     # miles_plugins.models.deepseek_v4 over yueming's.)
     pythonpath = f"{TE_INJECT_SITE}:{WORKTREE_ROOT}:{args.megatron_path}"
     if args.real_rollout:
-        # Prepend yueming-sglang AFTER the injector/worktree but BEFORE any system
+        # Prepend sglang fork AFTER the injector/worktree but BEFORE any system
         # site-packages so the DSv4 model + configs override the installed
         # /sgl-workspace/sglang (which lacks DSv4). Container-installed sgl_kernel,
         # aiter, transformers stay as-is (AMD-native compiled extensions).
@@ -334,17 +335,17 @@ def _train(args: ScriptArgs):
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
         "PYTHONPATH": pythonpath,
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
-        # yueming-sglang defaults to SGLANG_APPLY_CONFIG_BACKUP=auto, which loads a
+        # sglang fork defaults to SGLANG_APPLY_CONFIG_BACKUP=auto, which loads a
         # hardcoded 43-layer config; that breaks our 4-layer prune. Force "none" so
         # sglang reads the on-disk config.json.
         "SGLANG_APPLY_CONFIG_BACKUP": "none",
     }
     if args.real_rollout:
         # Enable the transformers 5.x rope_parameters -> rope_theta backfill so
-        # yueming-sglang's deepseek_v4 model can read config.rope_theta.
+        # the sglang fork's deepseek_v4 model can read config.rope_theta.
         # (See miles/utils/te_inject_site/dsv4_transformers_shim.py.)
         extra_env_vars["MILES_DSV4_TRANSFORMERS_SHIM"] = "1"
-        # DSv4 sglang serve env vars (mirrors yueming-sglang/python/run_dsv4.sh):
+        # DSv4 sglang serve env vars (mirrors sglang fork's python/run_dsv4.sh):
         # these route DSv4 attention kernels to the ROCm/aiter/Triton paths
         # instead of NV-only CUDA JITs (no deep_gemm, no cuda_runtime.h, etc).
         extra_env_vars.update(
