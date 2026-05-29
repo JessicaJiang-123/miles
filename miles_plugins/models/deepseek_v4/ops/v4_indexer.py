@@ -130,12 +130,22 @@ class V4Indexer(MegatronModule):
             cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
             cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
+        # index_scores: [B, S, K_seqlen_kv]
+        bsz_scores, seqlen_scores, k_seqlen = index_scores.shape
 
         def _original_topk(scores, k, **kwargs):
             k = min(k, scores.size(-1))
             return scores.topk(k, dim=-1)[1]
 
         topk_fn = indexer_replay_manager.get_topk_fn(_original_topk, return_probs=False)
-        topk_indices = topk_fn(index_scores, self.index_topk)
+        # The replay manager's _get_replay_result asserts top_indices.shape[0]
+        # matches scores.shape[0]. The rollout-side capturer records flat
+        # per-token indices ((n_tokens, topk)), so reshape scores to
+        # (B*S, K_seqlen) before invoking topk_fn. For the fallthrough path
+        # (no replay), this is shape-equivalent: scores.topk(k, dim=-1) on
+        # (B*S, K) yields (B*S, topk), which we reshape back to (B, S, topk).
+        index_scores_flat = index_scores.reshape(bsz_scores * seqlen_scores, k_seqlen)
+        topk_indices = topk_fn(index_scores_flat, self.index_topk)
+        topk_indices = topk_indices.reshape(bsz_scores, seqlen_scores, self.index_topk)
 
         return topk_indices
