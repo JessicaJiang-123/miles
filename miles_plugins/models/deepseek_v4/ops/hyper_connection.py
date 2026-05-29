@@ -33,12 +33,43 @@ cast to fp32 inside the kernel (yueming's TileKernels do the same; the linear
 GEMM is FP32 over BF16 inputs).
 """
 
+import os
+
 import einops
 import torch
 import torch.nn.functional as F
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import Tensor
+
+
+# --- Diagnostic-2 dump for layer outputs + final hidden (MILES_DSV4_DUMP) ---
+# hc_post_raw output == decoder-layer output (per layer); hc_head_raw output ==
+# final hidden after all layers (pre final-layernorm/lm_head). Tagged by a global
+# call counter so the 4 layers (8 hc_post calls: attn+ffn per layer) and the
+# single hc_head call are distinguishable. fp32 CPU, rank-0-keyed, once per tag.
+_DSV4_HC_DUMP_SEEN = set()
+_DSV4_HC_POST_COUNT = 0
+
+
+def _dsv4_hc_dump(tag, tensor):
+    prefix = os.environ.get("MILES_DSV4_DUMP")
+    if not prefix or tensor is None:
+        return
+    try:
+        import torch.distributed as dist
+
+        rank = dist.get_rank() if dist.is_initialized() else 0
+    except Exception:
+        rank = 0
+    key = (tag, rank)
+    if key in _DSV4_HC_DUMP_SEEN:
+        return
+    _DSV4_HC_DUMP_SEEN.add(key)
+    try:
+        torch.save(tensor.detach().float().cpu(), f"{prefix}.miles.{tag}.r{rank}.pt")
+    except Exception as e:  # noqa: BLE001
+        print(f"[dsv4-hc-dump] failed {tag}: {e}")
 
 
 # DeepSeek-V4 post-layer mixer factor (matches sglang `hc_post_mult_value=2.0`).
@@ -194,6 +225,9 @@ class DeepSeekV4HyperConnectionUtil:
         # comb @ residual:  einsum('bsjk,bskh->bsjh', comb, residual)
         term_res = torch.einsum("bsjk,bskh->bsjh", comb_fp32, residual_fp32)
         out = (term_x + term_res).to(dtype)
+        global _DSV4_HC_POST_COUNT
+        _dsv4_hc_dump(f"hc_post{_DSV4_HC_POST_COUNT}", out)
+        _DSV4_HC_POST_COUNT += 1
         return out
 
     def hc_head_raw(
@@ -225,7 +259,9 @@ class DeepSeekV4HyperConnectionUtil:
         pre = torch.sigmoid(mixes * scale + hc_base) + self.hc_eps  # (n, hc)
         x_per_token = x_flat_fp32.view(b * s, hc, hidden)
         layer_input = (pre.unsqueeze(-1) * x_per_token).sum(dim=1)  # (n, hidden)
-        return layer_input.view(b, s, hidden).to(dtype)
+        out = layer_input.view(b, s, hidden).to(dtype)
+        _dsv4_hc_dump("final_hidden", out)  # post-all-layers, pre final-layernorm
+        return out
 
     def layer_pre(
         self,
