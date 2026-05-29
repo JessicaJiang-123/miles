@@ -12,6 +12,39 @@ import torch.nn as nn
 # matching TF32 brings the gap to <=1.5e-5 mean-abs (1 ULP bf16 max-abs).
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
+
+
+# --- Diagnostic-2 per-layer activation dump (MILES_DSV4_DUMP=/path/prefix) ---
+# Env-gated; writes <prefix>.miles.L{layer}.{tag}.pt (fp32, CPU) the first time
+# each (layer, tag) is seen on TP rank 0. Used to compare the miles training
+# forward against the sglang inference forward component-by-component for the
+# train_rollout_logprob_abs_diff investigation. Dumps only layers listed in
+# MILES_DSV4_DUMP_LAYERS (comma-sep, default "0").
+_DSV4_DUMP_SEEN = set()
+
+
+def _dsv4_dump(tag, tensor, layer_id):
+    prefix = os.environ.get("MILES_DSV4_DUMP")
+    if not prefix or tensor is None:
+        return
+    layers = os.environ.get("MILES_DSV4_DUMP_LAYERS", "0").split(",")
+    if str(layer_id) not in layers:
+        return
+    try:
+        import torch.distributed as dist
+
+        rank = dist.get_rank() if dist.is_initialized() else 0
+    except Exception:
+        rank = 0
+    key = (layer_id, tag, rank)
+    if key in _DSV4_DUMP_SEEN:
+        return
+    _DSV4_DUMP_SEEN.add(key)
+    path = f"{prefix}.miles.L{layer_id}.r{rank}.{tag}.pt"
+    try:
+        torch.save(tensor.detach().float().cpu(), path)
+    except Exception as e:  # noqa: BLE001
+        print(f"[dsv4-dump] failed to save {path}: {e}")
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from megatron.core.extensions.transformer_engine import (
     TEColumnParallelLinear,
@@ -230,6 +263,7 @@ class DeepSeekV4Attention(MegatronModule):
             )
 
         x = einops.rearrange(hidden_states, "s b d -> b s d")
+        _dsv4_dump("attn_in_x", x, self.layer_id)
 
         bsz, seqlen_local, _ = x.size()
         freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen_local, self.cp_size, self.cp_group)
@@ -306,7 +340,13 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
 
+        _dsv4_dump("q", q, self.layer_id)
+        _dsv4_dump("kv", kv, self.layer_id)
+        _dsv4_dump("topk_idxs", topk_idxs, self.layer_id)
+        _dsv4_dump("attn_sink", self.attn_sink, self.layer_id)
+
         o = sparse_attn_tilelang(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
+        _dsv4_dump("attn_o_raw", o, self.layer_id)
 
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 
@@ -316,6 +356,7 @@ class DeepSeekV4Attention(MegatronModule):
         x, _ = self.wo_b(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")
+        _dsv4_dump("attn_out", output, self.layer_id)
 
         if self.sequence_parallel:
             output = scatter_to_sequence_parallel_region(output, group=self.tp_group)
