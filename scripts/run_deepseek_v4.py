@@ -485,6 +485,13 @@ def _train(args: ScriptArgs):
     import os as _os
     if _os.environ.get("ROCM_FMOE_FPROP", "0") == "1":
         extra_env_vars["ROCM_FMOE_FPROP"] = "1"
+    # Diagnostic passthrough: dense-MLA swap (Diag-1) and per-layer activation
+    # dump (Diag-2) for the train-rollout logprob-diff investigation. Forward the
+    # host env into the Ray workers so they can be flipped without editing code.
+    for _diag_var in ("MILES_DSV4_DENSE_ATTN", "MILES_DSV4_DUMP", "MILES_DSV4_DUMP_LAYERS"):
+        _v = _os.environ.get(_diag_var)
+        if _v:
+            extra_env_vars[_diag_var] = _v
 
     train_args = (
         f"{ckpt_args} "
