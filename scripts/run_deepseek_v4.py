@@ -89,6 +89,25 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # convergence run, and for surfacing real-rollout-only bugs (Megatron->sglang weight
     # bridge, etc) that fake_rollout hid.
     real_rollout: bool = False
+    # DECISIVE EXPERIMENT (train_rollout_logprob_abs_diff ~ 11.2 investigation):
+    # Force the sglang rollout to serve the experts (whole model) in BF16 instead
+    # of FP8 blockwise, so BOTH training (Megatron, bf16 torch_dist) AND rollout
+    # use the SAME bf16 expert weights. If the diff collapses, the 11.2 was the
+    # fp8(rollout)-vs-bf16(train) expert-weight quantization gap (expected, not a
+    # bug). If it stays ~11, the 4-of-43-layer prune-model floor dominates.
+    #
+    # Mechanism: point the rollout sglang's model_path (== hf_checkpoint) at a
+    # config whose `quantization_config` is REMOVED, so sglang's ModelConfig leaves
+    # self.quantization=None and builds BF16 (not Fp8) MoE modules. Then the
+    # Megatron->sglang refit (update_weights_from_tensor + process_weights_after_
+    # loading) keeps the bf16 weights bf16 instead of re-quantizing them to fp8.
+    # The on-disk safetensors are still fp8, so we also force load_format=dummy
+    # (initial weights are fully overwritten by the refit every weight-update step,
+    # which is the standard miles RL weight-sync flow).
+    bf16_rollout: bool = False
+    # Dir (under model_dir) holding the bf16-config model: symlinked fp8 shards +
+    # tokenizer + a config.json with quantization_config stripped.
+    bf16_rollout_cfg_name: str = "DeepSeek-V4-Flash-4layer-bf16cfg"
 
     def __post_init__(self):
         if not self.model_org:
@@ -196,6 +215,14 @@ def _train(args: ScriptArgs):
 
     load_save_path = f"{args.save_dir}/{args.run_id}/checkpoints"
     hf_checkpoint = args.hf_checkpoint or f"{args.model_dir}/{args.model_name}"
+    if args.bf16_rollout:
+        # Decisive experiment: serve the rollout in BF16. Point hf_checkpoint at
+        # the bf16-config dir (quantization_config stripped) so the rollout
+        # sglang ModelConfig keeps quantization=None and builds BF16 MoE modules.
+        # Training weights still come from --ref-load (the bf16 torch_dist), and
+        # the bf16-config dir's config.json is otherwise identical (same arch,
+        # 4 layers, same tokenizer), so the AutoBridge config read is unaffected.
+        hf_checkpoint = f"{args.model_dir}/{args.bf16_rollout_cfg_name}"
     ckpt_args = (
         f"--hf-checkpoint {hf_checkpoint} "
         f"--ref-load {args.model_dir}/{args.torch_dist_name} "
@@ -336,6 +363,14 @@ def _train(args: ScriptArgs):
         # comparing R3-HTTP-DEBUG (server-side raw body) with R3-PAYLOAD-DEBUG
         # (miles-side payload keys).
         misc_args += "--use-miles-router "
+    if args.bf16_rollout:
+        # The bf16-config dir's on-disk safetensors are still FP8 (F8_E4M3), so a
+        # BF16 ModelConfig would fail to load them (dtype mismatch). Force a dummy
+        # initial load; the Megatron->sglang refit overwrites every base param with
+        # the bf16 training weights on the first (and every) weight-update step,
+        # which is the standard miles RL weight-sync path (rollout weights are
+        # always replaced from training, never read from disk after init).
+        misc_args += "--sglang-load-format dummy "
     misc_args += " "
 
     if args.real_rollout:
