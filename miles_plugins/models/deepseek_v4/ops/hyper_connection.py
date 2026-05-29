@@ -62,6 +62,11 @@ def _dsv4_hc_dump(tag, tensor):
         rank = dist.get_rank() if dist.is_initialized() else 0
     except Exception:
         rank = 0
+    # Disk-frugal: rank-0 only (the hidden state is TP-replicated for these
+    # layer-output/final-hidden tensors, so rank 0 is representative), and only
+    # the first occurrence of each tag (first forward, layers in order).
+    if rank != 0:
+        return
     key = (tag, rank)
     if key in _DSV4_HC_DUMP_SEEN:
         return
