@@ -295,6 +295,12 @@ def _train(args: ScriptArgs):
         "--model-name deepseekv4 "  # for mbridge load
         "--qkv-format bshd "
         "--colocate "
+        # Dump per-token train+rollout logprobs to /tmp/dsv4-real/dump/ so we can
+        # post-mortem the train_rollout_logprob_abs_diff (which is ~11.19 on the
+        # baseline run, vs qwen3-4B ~0.028). See debug_dump.py and data_source.py
+        # for the file layout (rollout_data/{rollout_id}.pt + train_data/{rollout_id}_{rank}.pt
+        # + policy_loss_debug/rank_{rank}_call_{counter}.pt).
+        "--dump-details /tmp/dsv4-real/dump "
     )
 
     if args.real_rollout:
