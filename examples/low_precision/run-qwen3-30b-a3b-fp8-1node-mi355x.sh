@@ -58,8 +58,8 @@ ROLLOUT_ARGS=(
 EVAL_ARGS=(
    --eval-interval 20
    --eval-prompt-data aime "${DATA_DIR}/aime-2024/aime-2024.jsonl"
-   --n-samples-per-eval-prompt 16
-   --eval-max-response-len 16384
+   --n-samples-per-eval-prompt 1
+   --eval-max-response-len 512
    --eval-top-p 1
 )
 
@@ -135,7 +135,8 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-s
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"/root/Megatron-LM/\",
+    \"PYTHONPATH\": \"/root/Megatron-LM/:/data/data/hai/miles/miles/utils/te_inject_site\",
+    \"ROCM_TE_BLOCKWISE_INJECT\": \"1\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
     \"NVTE_FP8_BLOCK_SCALING_FP32_SCALES\": \"1\",
