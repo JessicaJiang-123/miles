@@ -97,6 +97,7 @@ async def update_sample_from_response(
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
     sample.rollout_routed_experts = get_rollout_topk_from_response(args, output, sample, "routed_experts")
+    sample.rollout_indexer_topk = get_rollout_indexer_topk_from_response(args, output, sample)
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
     sample.update_from_meta_info(args, output["meta_info"])
@@ -108,3 +109,26 @@ def get_rollout_topk_from_response(args, output, sample, key):
         return None
     x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
     return x.reshape(len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
+
+
+def get_rollout_indexer_topk_from_response(args, output, sample):
+    """DSv4 indexer-topk: shape (n_response_tokens, n_c4_layers, index_topk).
+
+    n_c4_layers is the count of layers with dsv4_compress_ratios==4. We don't
+    have that on args directly (it's a megatron-level TransformerConfig field),
+    so divide-and-conquer: total elements / (n_tokens * index_topk) gives the
+    layer count. index_topk is the DSA indexer topk size (default 512 per
+    DSv4-Flash). Returns None if the meta_info lacks the field (e.g. the
+    request didn't enable --use-rollout-indexer-replay).
+    """
+    info = output["meta_info"].get("indexer_topk")
+    if info is None:
+        return None
+    x = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
+    n_response_tokens = len(sample.tokens) - 1
+    index_topk = getattr(args, "dsa_indexer_topk", None) or 512
+    assert (
+        x.size % (n_response_tokens * index_topk) == 0
+    ), f"indexer_topk buffer size {x.size} not divisible by n_tokens*topk {n_response_tokens * index_topk}"
+    n_c4_layers = x.size // (n_response_tokens * index_topk)
+    return x.reshape(n_response_tokens, n_c4_layers, index_topk)

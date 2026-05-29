@@ -173,6 +173,15 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
 
+    if getattr(args, "use_rollout_indexer_replay", False):
+        # DSv4 indexer replay: ask sglang to dump the c4 indexer's top-512
+        # selected token indices per layer per step into meta_info["indexer_topk"].
+        # The training-side IndexerReplayManager then forces miles' V4Indexer to
+        # use these indices instead of recomputing topk on its own (numerically
+        # divergent) index_scores. Mirrors return_routed_experts semantics for
+        # the MoE router.
+        payload["return_indexer_topk"] = True
+
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
@@ -226,6 +235,21 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             args.num_layers,
             args.moe_router_topk,
         )
+
+    if "indexer_topk" in output["meta_info"]:
+        # DSv4 indexer-topk capture from sglang. See
+        # miles.rollout.generate_utils.generate_endpoint_utils.get_rollout_indexer_topk_from_response
+        # for the same logic shared with the OpenAI endpoint path. n_c4_layers is
+        # derived from the buffer size (sglang only includes layers with
+        # compress_ratio==4; for 4-layer DSv4-Flash that's 1 layer).
+        raw = np.frombuffer(
+            pybase64.b64decode(output["meta_info"]["indexer_topk"].encode("ascii")),
+            dtype=np.int32,
+        )
+        n_response_tokens = len(sample.tokens) - 1
+        index_topk = getattr(args, "dsa_indexer_topk", None) or 512
+        n_c4_layers = raw.size // (n_response_tokens * index_topk)
+        sample.rollout_indexer_topk = raw.reshape(n_response_tokens, n_c4_layers, index_topk)
 
     sample.update_from_meta_info(args, output["meta_info"])
 
