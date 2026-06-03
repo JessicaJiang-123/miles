@@ -10,6 +10,7 @@ from tests.ci.ci_utils import run_unittest_files
 HW_MAPPING = {
     "cpu": HWBackend.CPU,
     "cuda": HWBackend.CUDA,
+    "amd": HWBackend.AMD,
 }
 
 # PR-side label prefix the workflow attaches to every domain label and passes
@@ -36,11 +37,20 @@ PER_COMMIT_SUITES = {
         "stage-c-4-gpu-h200",
         "stage-c-2-gpu-h200",
     ],
+    # AMD/ROCm (gfx950 / MI350-355). Provisional: these suite names + GPU
+    # topology must stay in sync with the AMD runner fleet and the future
+    # pr-test-amd.yml jobs. No AMD tests are registered yet, so this suite
+    # currently resolves to zero tests (run_suite exits success) until test
+    # files start adding register_amd_ci(...).
+    HWBackend.AMD: [
+        "stage-amd-1-gpu-mi35x",
+    ],
 }
 
 # Nightly test suites (placeholder for future use)
 NIGHTLY_SUITES = {
     HWBackend.CUDA: [],
+    HWBackend.AMD: [],
 }
 
 
@@ -205,7 +215,7 @@ def run_a_suite(args):
     if args.list_only:
         return 0
 
-    # CPU tests (fast/) use pytest; CUDA tests use python3 per-file
+    # CPU tests (fast/) use pytest; CUDA/AMD tests use python3 per-file
     if hw == HWBackend.CPU:
         cmd = ["pytest"] + [t.filename for t in ci_tests] + ["-x", "-v"]
         print(f"Running: {' '.join(cmd)}", flush=True)
