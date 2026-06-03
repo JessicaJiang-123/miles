@@ -37,13 +37,13 @@ PER_COMMIT_SUITES = {
         "stage-c-4-gpu-h200",
         "stage-c-2-gpu-h200",
     ],
-    # AMD/ROCm (gfx950 / MI350-355). Provisional: these suite names + GPU
-    # topology must stay in sync with the AMD runner fleet and the future
-    # pr-test-amd.yml jobs. No AMD tests are registered yet, so this suite
-    # currently resolves to zero tests (run_suite exits success) until test
-    # files start adding register_amd_ci(...).
+    # AMD/ROCm (gfx950 / MI350-355), mirroring the CUDA c-2 / c-4 / c-8 tiers.
+    # Runner labels + node slicing are wired in pr-test-amd-rocm720.yml.
     HWBackend.AMD: [
-        "stage-amd-1-gpu-mi35x",
+        "stage-b-2-gpu-mi35x",
+        "stage-c-2-gpu-mi35x",
+        "stage-c-4-gpu-mi35x",
+        "stage-c-8-gpu-mi35x",
     ],
 }
 

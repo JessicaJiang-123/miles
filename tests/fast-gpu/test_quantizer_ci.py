@@ -4,12 +4,13 @@ The change adds `name.startswith(r)` to the ignore matching logic, so rules like
 "model.layers.0.self_attn" now ignore all weights under that prefix.
 """
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 
 # The quantizer hardcodes `device="cuda"` throughout; this test drives it with
 # real CUDA tensors to exercise the ignore-rule name-matching path. Fast enough
 # for the GPU fast suite; only needs 1 GPU.
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+register_amd_ci(est_time=60, suite="stage-b-2-gpu-mi35x", labels=[])
 
 
 import pytest
