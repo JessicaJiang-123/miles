@@ -1,4 +1,4 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 
 register_cuda_ci(
     est_time=60,
@@ -6,6 +6,7 @@ register_cuda_ci(
     labels=[],
     disabled="FIXME: re-enable after the MXFP8 H200 reference path is settled.",
 )
+register_amd_ci(est_time=60, suite="stage-b-2-gpu-mi35x", labels=[], disabled="ROCm TE wheel has no MXFP8Quantizer")
 
 
 import pytest

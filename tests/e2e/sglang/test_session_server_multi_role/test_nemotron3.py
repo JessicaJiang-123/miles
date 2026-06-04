@@ -1,7 +1,8 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_one
 
 register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_amd_ci(est_time=1200, suite="stage-c-4-gpu-mi35x", labels=["sglang"], disabled="modelopt_fp8 is rejected by the SGLang ROCm guard")
 
 
 # Nemotron-3-Super-120B-A12B-FP8 (~120GB fp8, A12B activated).
