@@ -5,6 +5,7 @@ from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, pre
 
 register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["megatron"])
 register_amd_ci(est_time=900, suite="stage-c-8-gpu-mi35x", labels=["megatron"])
+register_amd_ci(est_time=900, suite="stage-c-8-gpu-mi30x", labels=["megatron"])
 
 CASE = CaseConfig(
     use_deepep=False,

@@ -4,7 +4,18 @@ from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
 register_cuda_ci(est_time=1800, suite="stage-c-4-gpu-h200", labels=["megatron"])
-register_amd_ci(est_time=1800, suite="stage-c-4-gpu-mi35x", labels=["megatron"], disabled="INT4 quant kernel is CUDA-only (no ROCm/HIP build of fake_int_quant_cuda)")
+register_amd_ci(
+    est_time=1800,
+    suite="stage-c-4-gpu-mi35x",
+    labels=["megatron"],
+    disabled="INT4 quant kernel is CUDA-only (no ROCm/HIP build of fake_int_quant_cuda)",
+)
+register_amd_ci(
+    est_time=1800,
+    suite="stage-c-4-gpu-mi30x",
+    labels=["megatron"],
+    disabled="INT4 quant kernel is CUDA-only (no ROCm/HIP build of fake_int_quant_cuda)",
+)
 
 CASE = CaseConfig(
     use_deepep=False,

@@ -16,6 +16,7 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=420, suite="stage-c-4-gpu-h200", labels=["megatron"])
 register_amd_ci(est_time=420, suite="stage-c-4-gpu-mi35x", labels=["megatron"])
+register_amd_ci(est_time=420, suite="stage-c-4-gpu-mi30x", labels=["megatron"])
 
 MODEL_NAME = "MiMo-7B-RL"
 MODEL_TYPE = "mimo-7B-rl"

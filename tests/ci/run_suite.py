@@ -38,12 +38,16 @@ PER_COMMIT_SUITES = {
         "stage-c-2-gpu-h200",
     ],
     # AMD/ROCm (gfx950 / MI350-355), mirroring the CUDA c-2 / c-4 / c-8 tiers.
-    # Runner labels + node slicing are wired in pr-test-amd-rocm720.yml.
+    # Runner labels + node slicing are wired in pr-test-amd-rocm.yml.
     HWBackend.AMD: [
         "stage-b-2-gpu-mi35x",
         "stage-c-2-gpu-mi35x",
         "stage-c-4-gpu-mi35x",
         "stage-c-8-gpu-mi35x",
+        "stage-b-2-gpu-mi30x",
+        "stage-c-2-gpu-mi30x",
+        "stage-c-4-gpu-mi30x",
+        "stage-c-8-gpu-mi30x",
     ],
 }
 

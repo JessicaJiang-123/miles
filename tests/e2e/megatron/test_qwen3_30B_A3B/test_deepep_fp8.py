@@ -5,6 +5,7 @@ from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, p
 
 register_cuda_ci(est_time=1500, suite="stage-c-8-gpu-h100", labels=["megatron"])
 register_amd_ci(est_time=1500, suite="stage-c-8-gpu-mi35x", labels=["megatron"], disabled="Deep-EP is WIP on ROCm")
+register_amd_ci(est_time=1500, suite="stage-c-8-gpu-mi30x", labels=["megatron"], disabled="Deep-EP is WIP on ROCm")
 
 CASE = CaseConfig(
     use_deepep=True,

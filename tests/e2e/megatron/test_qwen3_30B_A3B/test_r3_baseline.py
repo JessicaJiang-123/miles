@@ -5,6 +5,7 @@ from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, p
 
 register_cuda_ci(est_time=1500, suite="stage-c-4-gpu-h200", labels=["megatron", "replay"])
 register_amd_ci(est_time=1500, suite="stage-c-4-gpu-mi35x", labels=["megatron", "replay"])
+register_amd_ci(est_time=1500, suite="stage-c-4-gpu-mi30x", labels=["megatron", "replay"])
 
 CASE = CaseConfig(
     use_deepep=False,

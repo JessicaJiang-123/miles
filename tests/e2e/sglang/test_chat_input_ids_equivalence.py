@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 
 register_cuda_ci(est_time=120, suite="stage-c-4-gpu-h200", labels=["sglang"])
 register_amd_ci(est_time=120, suite="stage-c-4-gpu-mi35x", labels=["sglang"])
+register_amd_ci(est_time=120, suite="stage-c-4-gpu-mi30x", labels=["sglang"])
 
 MODEL_PATH = os.environ.get("SGLANG_E2E_MODEL_PATH", "Qwen/Qwen3-0.6B")
 SEED = 1234

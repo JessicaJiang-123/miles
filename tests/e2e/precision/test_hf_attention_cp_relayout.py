@@ -15,6 +15,7 @@ from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 
 register_cuda_ci(est_time=60, suite="stage-c-4-gpu-h200", labels=["precision"])
 register_amd_ci(est_time=60, suite="stage-c-4-gpu-mi35x", labels=["precision"])
+register_amd_ci(est_time=60, suite="stage-c-4-gpu-mi30x", labels=["precision"])
 
 from miles_plugins.models.hf_attention import _packed_shard_to_zigzag, _zigzag_to_packed_shard
 

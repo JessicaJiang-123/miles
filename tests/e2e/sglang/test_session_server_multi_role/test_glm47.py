@@ -3,6 +3,7 @@ from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig,
 
 register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["sglang"])
 register_amd_ci(est_time=400, suite="stage-c-4-gpu-mi35x", labels=["sglang"])
+register_amd_ci(est_time=400, suite="stage-c-4-gpu-mi30x", labels=["sglang"])
 
 
 CONFIG = ModelConfig(

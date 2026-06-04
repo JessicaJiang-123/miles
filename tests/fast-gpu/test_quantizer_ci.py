@@ -10,7 +10,18 @@ from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 # real CUDA tensors to exercise the ignore-rule name-matching path. Fast enough
 # for the GPU fast suite; only needs 1 GPU.
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
-register_amd_ci(est_time=60, suite="stage-b-2-gpu-mi35x", labels=[])
+register_amd_ci(
+    est_time=60,
+    suite="stage-b-2-gpu-mi35x",
+    labels=[],
+    disabled="relies on CUDA-only fake_int4_quant_cuda kernel (not built on ROCm)",
+)
+register_amd_ci(
+    est_time=60,
+    suite="stage-b-2-gpu-mi30x",
+    labels=[],
+    disabled="relies on CUDA-only fake_int4_quant_cuda kernel (not built on ROCm)",
+)
 
 
 import pytest

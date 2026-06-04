@@ -1,0 +1,41 @@
+name: PR Test (AMD ROCm)
+
+on:
+  # Dispatch-only until AMD runner labels are confirmed and tests are validated
+  # on the fleet. mi30x (MI300) lanes mirror mi35x but are UNVALIDATED on MI300.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  amd:
+    # TODO: confirm AMD runner labels with the fleet owner. The ["arch","Ngpu"]
+    # values below are placeholders (may be sglang-style single labels such as
+    # linux-mi35x-gpu-8). Replace before this can actually run.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # MI350/355 (gfx950, ROCm 7.0)
+          - { suite: stage-b-2-gpu-mi35x, runs_on: '["mi35x", "2gpu"]', image: dev-rocm700-mi35x }
+          - { suite: stage-c-2-gpu-mi35x, runs_on: '["mi35x", "2gpu"]', image: dev-rocm700-mi35x }
+          - { suite: stage-c-4-gpu-mi35x, runs_on: '["mi35x", "4gpu"]', image: dev-rocm700-mi35x }
+          - { suite: stage-c-8-gpu-mi35x, runs_on: '["mi35x", "8gpu"]', image: dev-rocm700-mi35x }
+          # MI300 (gfx942, ROCm 7.0) — mirror of mi35x; UNVALIDATED on MI300
+          - { suite: stage-b-2-gpu-mi30x, runs_on: '["mi30x", "2gpu"]', image: dev-rocm700-mi30x }
+          - { suite: stage-c-2-gpu-mi30x, runs_on: '["mi30x", "2gpu"]', image: dev-rocm700-mi30x }
+          - { suite: stage-c-4-gpu-mi30x, runs_on: '["mi30x", "4gpu"]', image: dev-rocm700-mi30x }
+          - { suite: stage-c-8-gpu-mi30x, runs_on: '["mi30x", "8gpu"]', image: dev-rocm700-mi30x }
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      hw: amd
+      runs_on: ${{ matrix.runs_on }}
+      container_image: rlsys/miles:${{ matrix.image }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw amd --suite ${{ matrix.suite }} --match-all-labels
+    secrets: inherit

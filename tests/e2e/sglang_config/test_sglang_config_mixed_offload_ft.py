@@ -19,6 +19,7 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["short"])
 register_amd_ci(est_time=600, suite="stage-c-8-gpu-mi35x", labels=["short"])
+register_amd_ci(est_time=600, suite="stage-c-8-gpu-mi30x", labels=["short"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
