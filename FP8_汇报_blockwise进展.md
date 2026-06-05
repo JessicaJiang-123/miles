@@ -1,6 +1,6 @@
 # Miles ROCm Blockwise FP8 训练 — 进展汇报
 
-> 面向:组员 + 老板。日期:2026-06-05。
+> 日期:2026-06-05。
 > 主题:在 miles 上支持 DeepSeek-style blockwise FP8 **训练**(ROCm / MI355X / gfx950)的进展、技术路径、调研结论、缺口与下一步。
 
 ---
@@ -51,7 +51,7 @@ miles  ──(--fp8-recipe blockwise)──►  Megatron 的 Float8BlockScaling 
 
 ---
 
-## 四、Kernel 层:核心认知(给非 kernel 背景的同事)
+## 四、Kernel 层:核心认知
 
 1. **aiter ≠ triton**。aiter 是 AMD 的**kernel 库**;triton 是写 kernel 的一种**语言(DSL)**。aiter 里一部分 kernel 用 triton 写、一部分用汇编/CK(Composable Kernel,AMD 的 C++ 模板库,类比 CUTLASS)写。我们 dense 用的 `gemm_a8w8_blockscale` 是 aiter 里**triton 写的那个**。
 2. **一个 GEMM kernel 几乎覆盖一切**。前向(fprop)、反向(dgrad、wgrad)本质都是矩阵乘,**一个 `x@wᵀ` 的 blockwise FP8 GEMM,配合不同的操作数映射,就能表达全部三个**。
@@ -124,7 +124,7 @@ MoE 的专家 = 一堆小 MLP(gate/up/down 三个线性 + SiLU)。算 MoE 有三
 ## 八、调研结果:ROCm 社区现有什么、缺什么(本地源码 + 联网双重确证)
 
 ### 8.1 一句话结论
-**ROCm 上没有现成的"带反向、能训练 blockwise FP8 MoE grouped GEMM"。** 现有 blockwise FP8 GEMM 全是前向;带反向的 grouped GEMM 只支持 BF16。
+**ROCm 上没有现成的"带反向、能训练 blockwise FP8 MoE grouped GEMM"。** 现有 blockwise FP8 GEMM 全是前向;带反向的 grouped GEMM 只支持 per-tensor/BF16,不支持 blockwise。
 
 ### 8.2 两个关键 kernel(各有一半,没合到一起)—— 这是缺口的核心
 
@@ -139,20 +139,51 @@ MoE 的专家 = 一堆小 MLP(gate/up/down 三个线性 + SiLU)。算 MoE 有三
 
 | 项目 | 是什么 | blockwise FP8? | 反向/训练? | gfx950? | 备注 |
 |---|---|---|---|---|---|
-| **DeepGEMM**(deepseek-ai)| FP8 GEMM 库 | ✅(含 MoE grouped)| ✅ **有 wgrad**(2025-05 起)| ❌ **CUDA only** | **黄金参考**:可对照移植反向 |
-| **ROCm/DeepEP** | EP 通信(AMD fork)| FP8 dispatch | ❌ | ❌ **仅 gfx942/MI300** | 实验性,gfx950 还没到 |
-| **mori(MORI-EP)** | EP 通信(AMD)| FP8 dispatch | 无 autograd | ✅ | sglang 已用;**是扩规模才需要,与 FP8 计算正交** |
-| **AMD Primus** | AMD 训练框架 | ❌ 公开只 BF16 | (BF16)| — | 暂无公开 blockwise FP8 MoE 训练 |
-| **ROCm/TransformerEngine** | TE 的 ROCm 版 | blockwise **gate 关** | flash-attn 有 | 部分 | 我们就是绕开它 |
+| [**DeepGEMM**](https://github.com/deepseek-ai/DeepGEMM)(deepseek-ai)| FP8 GEMM 库 | ✅(含 MoE grouped)| ✅ **有 wgrad**(2025-05 起,`k_grouped_fp8_gemm_tn_contiguous`)| ❌ **CUDA only** | **黄金参考**:可对照移植反向 |
+| [**ROCm/DeepEP**](https://github.com/ROCm/DeepEP) | EP 通信(AMD fork)| FP8 dispatch | ❌ | ❌ **仅 gfx942/MI300** | 实验性,gfx950 还没到 |
+| [**mori(MORI-EP)**](https://github.com/ROCm/mori) | EP 通信(AMD)| FP8 dispatch | 无 autograd | ✅ | sglang 已用;**是扩规模才需要,与 FP8 计算正交** |
+| [**AMD Primus**](https://github.com/AMD-AGI/Primus) | AMD 训练框架 | ❌ 公开只 BF16 | (BF16)| — | 暂无公开 blockwise FP8 MoE 训练 |
+| [**ROCm/TransformerEngine**](https://github.com/ROCm/TransformerEngine) | TE 的 ROCm 版 | blockwise **gate 关**(详见 8.5)| flash-attn 有 | 部分 | 我们就是绕开它 |
 
-### 8.4 一个相关 issue:aiter#2421 "FP8 fused MoE precision"(gfx950)
+### 8.4 一个相关 issue:[aiter#2421](https://github.com/ROCm/aiter/issues/2421) "FP8 fused MoE precision"(gfx950)
 - 测的是**前向 fmoe**(`aiter.fused_moe`,CK 2-stage)。topk=1 通过;topk=4 约 3.5% 元素超 0.03、max_diff ~0.09。
 - **结论:不是 bug,是 FP8 固有噪声**——topk≥2 时多个专家的 BF16 结果相加,把舍入误差放大了。社区(vLLM)靠**放宽容差**接受。
 - 对我们的意义:**前向 fmoe 可信**;**MoE 误差随 topk 放大是正常物理现象**,训练侧心里有数即可。
 
+### 8.5 ROCm/TransformerEngine 上游现状(2026-06-05 核查 `dev` 分支,v2.14.0.dev0)
+
+**结论:上游"FP8 训练"已支持 per-tensor / MXFP8 / FP4,但 DeepSeek blockwise(`Float8BlockScaling`)仍未端到端可用——量化在做、GEMM 还没。**
+
+各 FP8 recipe(TE 的 4 个 FP8 class)在 ROCm 的支持状态:
+
+| TE recipe class | 粒度(scale 管多大)| scale 格式 | ROCm 支持 | gate 函数 | 我们要的? |
+|---|---|---|---|---|---|
+| `DelayedScaling`(per-tensor,延迟缩放/用历史 amax)| 整个张量 1 个 | FP32 | ✅ 支持 | `check_fp8_support` | ❌ |
+| `Float8CurrentScaling`(per-tensor,当前缩放/用当前 amax)| 整个张量 1 个 | FP32 | ✅ 支持 | `check_fp8_support` | ❌ |
+| `MXFP8BlockScaling`(MXFP8)| **1×32** | **E8M0(2 的幂)** | ⚠️ opt-in(`NVTE_ROCM_ENABLE_MXFP8`,gfx95x)| `check_mxfp8_support` | ❌ |
+| **`Float8BlockScaling`(DeepSeek blockwise)** | 激活 **1×128** / 权重 **128×128** | **FP32** | ❌ **gate 仍返回 "not yet supported for ROCm"** | `check_fp8_block_scaling_support` | ✅ **就这个** |
+
+> 数据格式都是 **E4M3**(`DelayedScaling` 也支持 E5M2)。此外 ROCm 还支持 FP4 两类(`NVFP4` / `MXFP4`),与本任务无关。**4 个 FP8 class 里,唯独 `Float8BlockScaling`(DeepSeek)在 ROCm 上还没放开。**
+
+关键 PR / issue(均附链接):
+
+| PR / issue | 状态 | 内容 | 对我们的意义 |
+|---|---|---|---|
+| [**#609**](https://github.com/ROCm/TransformerEngine/pull/609) enable blockwise FP8 quantization on rocm | open(今天更新)| 解 gate(gfx9+→True)+ 适配 1×128/128×128 量化-转置 kernel(**绕开 NV 专用的 TMA**)。作者原话:**"only the quantization, not the GEMM"** | blockwise 的「**量化**」半边在做,**GEMM 没** |
+| [**#544**](https://github.com/ROCm/TransformerEngine/pull/544) Improve backward perf for CK Tile FP8 Group GEMM | ✅ **已合并(2026-04-26)** | 改进 **per-tensor FP8 grouped GEMM 的 wgrad**(用 `columnwise_data` / TN 布局重表达 W_grad)| 「**grouped GEMM 带反向**」骨架**已合并**(per-tensor)|
+| [**#594**](https://github.com/ROCm/TransformerEngine/pull/594) Fix CK FP8 grouped GEMM dtype gating | open(今天)| E2E **Qwen Megatron** 跑出 FP8 grouped WGRAD 退回 hipBLASLt,正在修 | 上游此刻在用**真实 Megatron 训练**打磨 FP8 grouped 反向 |
+| [**#413**](https://github.com/ROCm/TransformerEngine/pull/413) Enhance GroupedLinear with AITER triton | ✅ 已合并 | 把 **aiter triton grouped linear** 接进 TE 的 GroupedLinear | 另一条 grouped 后端(aiter)|
+
+上游 grouped GEMM 代码位置:`transformer_engine/common/gemm/ck_grouped_gemm/ck_grouped_gemm_fp8.cpp`(**CK** 后端,底层 `ck_tile/ops/gemm_quant/`;含 TN/NN/NT 三 layout = fprop/dgrad/wgrad)。
+
+> **拼图结论**:**blockwise grouped GEMM = [#609](https://github.com/ROCm/TransformerEngine/pull/609) 的量化 ⊕ [#544](https://github.com/ROCm/TransformerEngine/pull/544) 这套 CK grouped-GEMM-带反向骨架** —— 两块上游都已有雏形,但**还没人把 blockwise 配方插进「grouped + 反向」**。因此:
+> - ROCm/TE 的**完整 blockwise FP8 训练今天仍跑不了**(GEMM 缺 blockwise);
+> - 我们 **monkeypatch→aiter(尤其 GEMM)仍然必要**;
+> - 但这条线**进展很快、值得持续 track**,「blockwise GEMM 的 roadmap」是与 TE team 沟通的关键问题。
+
 ---
 
-## 九、当前进展 & 缺口(给老板的一页)
+## 九、当前进展 & 缺口
 
 **已完成 ✅**
 - dense blockwise FP8 训练**端到端跑通并验证**(qwen3-4B,3–4% 噪声地板,符合预期)。
