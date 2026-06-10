@@ -70,6 +70,10 @@ def start_sglang_server(
     ]
     if enable_deterministic_inference:
         cmd.append("--enable-deterministic-inference")
+        # ROCm sgl_kernel has no FA3; deterministic inference otherwise defaults
+        # to fa3, so pin the attention backend to triton on ROCm hosts.
+        if os.path.exists("/dev/kfd") and not (extra_args and "--attention-backend" in extra_args):
+            cmd.extend(["--attention-backend", "triton"])
     if extra_args:
         cmd.extend(extra_args)
 
