@@ -1,12 +1,10 @@
 import os
 
-from tests.ci.ci_register import register_amd_ci, register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=5000, suite="stage-c-2-gpu-h200", labels=["long"])
-register_amd_ci(est_time=5000, suite="stage-c-2-gpu-mi35x", labels=["long"])
-register_amd_ci(est_time=5000, suite="stage-c-2-gpu-mi30x", labels=["long"])
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
