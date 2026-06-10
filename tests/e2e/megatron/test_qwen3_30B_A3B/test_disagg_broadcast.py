@@ -1,9 +1,11 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_amd_ci, register_cuda_ci
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
 register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["megatron", "weight-update"])
+register_amd_ci(est_time=900, suite="stage-c-8-gpu-mi35x", labels=["megatron", "weight-update"])
+register_amd_ci(est_time=900, suite="stage-c-8-gpu-mi30x", labels=["megatron", "weight-update"])
 
 CASE = CaseConfig(
     use_deepep=False,
