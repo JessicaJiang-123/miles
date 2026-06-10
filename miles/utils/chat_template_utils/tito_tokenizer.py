@@ -22,7 +22,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # Python < 3.11
+    from backports.strenum import StrEnum
 from pathlib import Path
 from typing import Any
 
