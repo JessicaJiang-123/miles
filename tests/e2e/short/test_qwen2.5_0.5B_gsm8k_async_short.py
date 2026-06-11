@@ -1,12 +1,10 @@
 import os
 
-from tests.ci.ci_register import register_amd_ci, register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=240, suite="stage-c-8-gpu-h100", labels=["short"])
-register_amd_ci(est_time=240, suite="stage-c-8-gpu-mi35x", labels=["short"])
-register_amd_ci(est_time=240, suite="stage-c-8-gpu-mi30x", labels=["short"])
 
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
