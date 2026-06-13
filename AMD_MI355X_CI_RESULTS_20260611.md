@@ -94,7 +94,7 @@ import; without it the StrEnum-dependent tests fail at the conftest import).
 | 11 | `sglang/.../test_minimax_m27.py` | no | — | MiniMax-M2 (~230 GB), too large to download/run | Not registered (removed this session) |
 | 12 | `sglang/.../test_nemotron3.py` | yes | FAIL | `modelopt_fp8` rejected by the ROCm guard | Not registered (removed this session; was registered+disabled "modelopt_fp8 ... ROCm guard") |
 | 13 | `sglang/.../test_qwen3.py` | yes | FAIL (timeout 2400s) | **F** ROCm sglang `/v1/chat/completions` does not return `meta_info.output_token_logprobs` (logprobs=True set) -> session server 502 -> no driver events -> timeout. FP8 model load + sglang serve both OK. (also needed StrEnum guard in `session_verify_agent.py`) | Not registered (removed this session) |
-| 14 | `sglang/.../test_qwen35.py` | yes | FAIL | **F** (reproduced, identical to #13) | Not registered (removed this session) |
+| 14 | `sglang/.../test_qwen35.py` | yes | FAIL | **F** (reproduced, identical to 13) | Not registered (removed this session) |
 
 ---
 
