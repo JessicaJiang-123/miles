@@ -13,11 +13,11 @@ result and the test's registration status on the `amd-cicd` branch.
 These were applied to the working tree only, to get past environment blockers so
 the real per-test behaviour could be observed. Each has a dedicated upstream-style
 branch (see below).
-1. **Py3.10 StrEnum guard** — `miles/utils/chat_template_utils/tito_tokenizer.py`
-   (and `miles/utils/test_utils/session_verify_agent.py`) do a bare
-   `from enum import StrEnum`, which fails on Py3.10. Guarded with
-   `try: from enum import StrEnum / except ImportError: from backports.strenum import StrEnum`.
-   Both `tito_tokenizer.py` and `session_verify_agent.py` are covered by the `amd-fix-py3.11` branch.
+1. ~~**Py3.10 StrEnum guard** — `miles/utils/chat_template_utils/tito_tokenizer.py`~~
+   ~~(and `miles/utils/test_utils/session_verify_agent.py`) do a bare~~
+   ~~`from enum import StrEnum`, which fails on Py3.10. Guarded with~~
+   ~~`try: from enum import StrEnum / except ImportError: from backports.strenum import StrEnum`.~~
+   ~~Both `tito_tokenizer.py` and `session_verify_agent.py` are covered by the `amd-fix-py3.11` branch.~~ ✅ fixed in 1339
 2. **Ray HIP-visibility fix** — `miles/utils/external_utils/command_utils.py`:
    on ROCm, set `RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1` /
    `RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1` and pass HIP_VISIBLE_DEVICES into
@@ -26,7 +26,7 @@ branch (see below).
    defaults to FA3 which is not in the ROCm `sgl_kernel`; pin `--attention-backend triton`.
 
 ## Standalone fix branches
-- `amd-fix-py3.11` — Py3.10 StrEnum guard (covers `tito_tokenizer.py` + `session_verify_agent.py`).
+- ~~`amd-fix-py3.11` — Py3.10 StrEnum guard (covers `tito_tokenizer.py` + `session_verify_agent.py`).~~ ✅ fixed in 1339
 - `amd-ray-hip-visibility` — Ray HIP visible-device handling on ROCm.
 - `amd-sglang-triton-backend` — pin sglang deterministic inference to triton on ROCm.
 
