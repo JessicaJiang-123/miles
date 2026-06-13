@@ -18,16 +18,16 @@ branch (see below).
    ~~`from enum import StrEnum`, which fails on Py3.10. Guarded with~~
    ~~`try: from enum import StrEnum / except ImportError: from backports.strenum import StrEnum`.~~
    ~~Both `tito_tokenizer.py` and `session_verify_agent.py` are covered by the `amd-fix-py3.11` branch.~~ ✅ fixed in 1339
-2. **Ray HIP-visibility fix** — `miles/utils/external_utils/command_utils.py`:
-   on ROCm, set `RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1` /
-   `RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1` and pass HIP_VISIBLE_DEVICES into
-   the Ray job, otherwise Ray training actors fail with `No HIP GPUs are available`.
+2. ~~**Ray HIP-visibility fix** — `miles/utils/external_utils/command_utils.py`:~~
+   ~~on ROCm, set `RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=1` /~~
+   ~~`RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1` and pass HIP_VISIBLE_DEVICES into~~
+   ~~the Ray job, otherwise Ray training actors fail with `No HIP GPUs are available`.~~
 3. **sglang triton attention backend** — on ROCm, deterministic-inference sglang
    defaults to FA3 which is not in the ROCm `sgl_kernel`; pin `--attention-backend triton`.
 
 ## Standalone fix branches
 - ~~`amd-fix-py3.11` — Py3.10 StrEnum guard (covers `tito_tokenizer.py` + `session_verify_agent.py`).~~ ✅ fixed in 1339
-- `amd-ray-hip-visibility` — Ray HIP visible-device handling on ROCm.
+- ~~`amd-ray-hip-visibility` — Ray HIP visible-device handling on ROCm.~~
 - `amd-sglang-triton-backend` — pin sglang deterministic inference to triton on ROCm.
 
 ## Error-type legend
