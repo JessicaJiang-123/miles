@@ -18,3 +18,16 @@ diff --git a/megatron/legacy/fused_kernels/__init__.py b/megatron/legacy/fused_k
  
      # Check if cuda 11 is installed for compute capability 8.0
      cc_flag = []
+diff --git a/megatron/core/fp8_utils.py b/megatron/core/fp8_utils.py
+--- a/megatron/core/fp8_utils.py
++++ b/megatron/core/fp8_utils.py
+@@ -168,7 +168,8 @@ def _get_custom_recipe(quantizer_factory_python_path: str) -> Union[Fp8Recipe, F
+ def get_fp8_align_size(fp8_recipe: Fp8Recipe) -> int:
+     """Get the alignment size required for fp8 GEMM."""
+     if fp8_recipe == Fp8Recipe.mxfp8:
+-        return 32
++        # TODO: remove once Megatron reads the MXFP8 alignment from TE
++        return 256
+     else:
+         return 16
+ 
