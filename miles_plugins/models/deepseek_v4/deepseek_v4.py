@@ -321,6 +321,13 @@ class DeepSeekV4Attention(MegatronModule):
 
         return output
 
+    def backward_dw(self) -> None:
+        """Execute weight update operations"""
+        self.wo_b.backward_dw()
+        self.wkv.backward_dw()
+        self.wq_b.backward_dw()
+        self.wq_a.backward_dw()
+
     def _compute_indexer_mask(self, *, q_positions: torch.Tensor, seqlen_global: int) -> torch.Tensor:
         """Dense causal mask for legacy DSAIndexer path."""
         ratio = 4
