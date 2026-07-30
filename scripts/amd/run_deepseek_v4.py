@@ -61,7 +61,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
-    enable_eval: bool = True
+    enable_eval: bool = False
     enable_mtp: bool = False
 
     hf_checkpoint: str | None = None
@@ -279,7 +279,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     if actor_num_gpus_per_node == 8:
         if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP8/PP4/EP8, 43 layers = 11+11+11+10
             return (
-                "--tensor-model-parallel-size 8 "
+                "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 4 "
                 "--decoder-first-pipeline-num-layers 11 "
@@ -339,7 +339,7 @@ def _train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 4096 "
+                f"--rollout-max-response-len 8192 "
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
@@ -394,6 +394,7 @@ def _train(args: ScriptArgs):
             # 4-node PP4 memory balance: partial optimizer offload (keep ~25% on GPU) + keep train
             # weights on GPU; pair with --sglang-mem-fraction-static 0.6.
             optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
+            optimizer_args += "--offload-rollout-level kv_cache "
 
     sglang_world_size = 4
     sglang_tp_size = 4
@@ -428,7 +429,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.7 "
+        "--sglang-mem-fraction-static 0.5 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
