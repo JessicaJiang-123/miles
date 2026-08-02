@@ -411,9 +411,9 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
-        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
+        "SGLANG_HACK_FLASHMLA_BACKEND": "unified_kv_triton",
         "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
-        "SGLANG_OPT_USE_JIT_NORM": "false",  # JIT norm+RoPE increases logprobdiff on ROCm
+        "SGLANG_OPT_USE_JIT_NORM": "true",
         "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "AITER_BF16_FP8_MOE_BOUND": "0",
