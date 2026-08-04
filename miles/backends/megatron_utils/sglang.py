@@ -8,11 +8,6 @@ except ImportError:
     should_deepgemm_weight_requant_ue8m0 = None
 
 try:
-    from sglang.srt.layers import deep_gemm_wrapper
-except ImportError:
-    deep_gemm_wrapper = None
-
-try:
     from sglang.srt.layers.quantization.fp8_utils import per_block_cast_to_fp8
 except ImportError:
     per_block_cast_to_fp8 = None
@@ -34,7 +29,6 @@ __all__ = [
     "quant_weight_ue8m0",
     "transform_scale_ue8m0",
     "should_deepgemm_weight_requant_ue8m0",
-    "deep_gemm_wrapper",
     "monkey_patch_torch_reductions",
     "MultiprocessingSerializer",
     "FlattenedTensorBucket",
