@@ -49,10 +49,7 @@ CASE = CaseConfig(
     rollout_num_gpus_per_engine=4,
     sglang_ep_size=4,
     max_tokens_per_gpu=2048,
-    extra_args=(
-        "--sglang-moe-a2a-backend mori "
-        "--sglang-deepep-mode auto "
-    ),
+    extra_args=("--sglang-moe-a2a-backend mori " "--sglang-deepep-mode auto "),
     extra_env_vars={"SGLANG_MORI_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "16384"},
 )
 
