@@ -5,13 +5,15 @@ split into two 4-GPU runners, so the 8-GPU CUDA case cannot run there as
 written, and keeping the variant separate means neither side's parallelism
 constrains the other.
 
-Difference from the CUDA case: the parallelism drops to the 4-GPU shape already
-proven for this model in test_r3_baseline.py / test_r3_deepep_fp8.py
+Two differences from the CUDA case. The parallelism drops to the 4-GPU shape
+already proven for this model in test_r3_baseline.py / test_r3_deepep_fp8.py
 (cp2/pp1/tp2/ep4), and the rollout engine and SGLang EP follow the world size
-down from 8 to 4. The feature flags under test are unchanged: DeepEP on, FP8
-rollout on, bridge on, R3 off. max_tokens_per_gpu is left at the CUDA case's
-2048 -- that cap was set by host memory, which the split runner does not
-change.
+down from 8 to 4. And the dispatchers differ: the training side uses the
+alltoall token dispatcher, the rollout side uses mori. What the case covers is
+otherwise unchanged: expert weights stay EP-sharded, so the bridge conversion
+under FP8 rollout is exercised exactly as on CUDA. max_tokens_per_gpu is left
+at the CUDA case's 2048 -- that cap was set by host memory, which the split
+runner does not change.
 """
 
 import os
@@ -34,7 +36,7 @@ register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
-    use_deepep=True,
+    use_deepep=False,
     use_fp8_rollout=True,
     use_int4_rollout=False,
     use_bridge=True,
@@ -47,6 +49,11 @@ CASE = CaseConfig(
     rollout_num_gpus_per_engine=4,
     sglang_ep_size=4,
     max_tokens_per_gpu=2048,
+    extra_args=(
+        "--sglang-moe-a2a-backend mori "
+        "--sglang-deepep-mode auto "
+    ),
+    extra_env_vars={"SGLANG_MORI_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "16384"},
 )
 
 
