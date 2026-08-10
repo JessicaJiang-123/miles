@@ -31,7 +31,6 @@ register_rocm_ci(
     est_time=600,
     suite="stage-c-4-gpu-mi300x",
     labels=["miles-plugin", "amd"],
-    disabled="Disable due to failure",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
