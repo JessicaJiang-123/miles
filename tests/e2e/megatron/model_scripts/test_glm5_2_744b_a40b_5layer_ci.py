@@ -1,13 +1,24 @@
 import os
 
-from scripts.run_glm5_2_744b_a40b import (
-    ScriptArgs,
-    _convert_to_fp8,
-    _execute_train,
-    _prepare_download,
-    _prepare_megatron_ckpt,
-    _validate_glm_checkpoint,
-)
+if os.getenv("MILES_HARDWARE_BACKEND") == "rocm":
+    from scripts.amd.run_glm5_2_744b_a40b import (
+        ScriptArgs,
+        _convert_to_fp8,
+        _execute_train,
+        _prepare_download,
+        _prepare_megatron_ckpt,
+        _validate_glm_checkpoint,
+    )
+else:
+    from scripts.run_glm5_2_744b_a40b import (
+        ScriptArgs,
+        _convert_to_fp8,
+        _execute_train,
+        _prepare_download,
+        _prepare_megatron_ckpt,
+        _validate_glm_checkpoint,
+    )
+
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
