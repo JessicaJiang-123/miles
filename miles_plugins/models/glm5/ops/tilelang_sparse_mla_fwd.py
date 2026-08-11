@@ -70,7 +70,7 @@ def sparse_mla_fwd(
         REPLICATE_H = 1
 
     H_per_block = padded_H if REPLICATE_H == 1 else 64
-    kernel_num_stages = min(num_stages, 1) if os.getenv("MILES_HARDWARE_BACKEND") == "rocm" else num_stages
+    kernel_num_stages = min(num_stages, 1) if os.getenv("MILES_PLATFORM") == "rocm" else num_stages
 
     @T.prim_func
     def main(

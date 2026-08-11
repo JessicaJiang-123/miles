@@ -1,6 +1,6 @@
 import os
 
-if os.getenv("MILES_HARDWARE_BACKEND") == "rocm":
+if os.getenv("MILES_PLATFORM") == "rocm":
     from scripts.amd.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
 else:
     from scripts.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
