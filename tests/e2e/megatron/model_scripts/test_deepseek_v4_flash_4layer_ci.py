@@ -11,6 +11,11 @@ from tests.ci.metric_history import register_ci_gate
 register_cuda_ci(est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 register_rocm_ci(
     est_time=1900,
+    suite="stage-c-4-gpu-mi350",
+    labels=["megatron", "model-scripts", "amd"],
+)
+register_rocm_ci(
+    est_time=1900,
     suite="stage-c-4-gpu-mi300x",
     labels=["megatron", "model-scripts", "amd"],
     disabled="Disable due to failure",

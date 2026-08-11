@@ -23,6 +23,11 @@ from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, pre
 
 register_rocm_ci(
     est_time=1100,
+    suite="stage-c-4-gpu-mi350",
+    labels=["megatron", "amd"],
+)
+register_rocm_ci(
+    est_time=1100,
     suite="stage-c-4-gpu-mi300x",
     labels=["megatron", "amd"],
     disabled="Disable due to failure",

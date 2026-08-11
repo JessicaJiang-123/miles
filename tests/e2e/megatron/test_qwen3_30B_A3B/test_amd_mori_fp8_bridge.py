@@ -24,6 +24,11 @@ from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, p
 
 register_rocm_ci(
     est_time=800,
+    suite="stage-c-4-gpu-mi350",
+    labels=["megatron", "amd"],
+)
+register_rocm_ci(
+    est_time=800,
     suite="stage-c-4-gpu-mi300x",
     labels=["megatron", "amd"],
     disabled="Disable due to failure",

@@ -25,6 +25,11 @@ from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, exec
 
 register_rocm_ci(
     est_time=1600,
+    suite="stage-c-4-gpu-mi350",
+    labels=["megatron", "qwen35", "amd"],
+)
+register_rocm_ci(
+    est_time=1600,
     suite="stage-c-4-gpu-mi300x",
     labels=["megatron", "qwen35", "amd"],
 )
