@@ -32,11 +32,6 @@ register_rocm_ci(
     suite="stage-c-4-gpu-mi350",
     labels=["miles-plugin", "amd"],
 )
-register_rocm_ci(
-    est_time=600,
-    suite="stage-c-4-gpu-mi300x",
-    labels=["miles-plugin", "amd"],
-)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

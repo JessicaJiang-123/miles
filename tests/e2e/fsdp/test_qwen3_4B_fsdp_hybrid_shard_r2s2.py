@@ -14,11 +14,6 @@ register_rocm_ci(
     suite="stage-c-4-gpu-mi350",
     labels=["fsdp", "amd"],
 )
-register_rocm_ci(
-    est_time=600,
-    suite="stage-c-4-gpu-mi300x",
-    labels=["fsdp", "amd"],
-)
 
 NUM_GPUS = 4
 DP_REPLICATE_SIZE = 2
