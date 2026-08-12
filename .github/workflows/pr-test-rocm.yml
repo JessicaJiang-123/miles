@@ -29,10 +29,10 @@ on:
   workflow_dispatch:
     inputs:
       ci_image_tag:
-        description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260708)'
+        description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260811)'
         required: false
         type: string
-        default: 'miles-rocm700-mi30x-20260708'
+        default: 'miles-rocm700-mi30x-20260811'
 
 permissions:
   contents: read
@@ -73,7 +73,7 @@ jobs:
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260708"
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260811"
           if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
             exit 1
