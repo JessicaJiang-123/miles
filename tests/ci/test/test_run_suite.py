@@ -357,7 +357,7 @@ class TestRocmWorkflowScopeSeam:
 
     def test_stage_consumes_policy_and_preserves_manual_full_scope(self):
         workflow = self._workflow()
-        stage = workflow.split("  stage-c-4-gpu-mi300x:", 1)[1]
+        stage = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
         assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
