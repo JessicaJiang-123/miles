@@ -1,6 +1,6 @@
 import os
 
-if os.getenv("MILES_PLATFORM") == "rocm":
+if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
     from scripts.amd.run_glm5_2_744b_a40b import (
         ScriptArgs,
         _convert_to_fp8,
