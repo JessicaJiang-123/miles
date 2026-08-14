@@ -35,9 +35,8 @@ Four launch scripts show the mode end to end, from a single-node smoke test to a
 
 | Script | What it covers |
 |---|---|
-| [`run-qwen3-4b-fully_async.sh`](https://github.com/radixark/miles/blob/main/examples/fully_async/run-qwen3-4b-fully_async.sh) | The smallest complete run: Qwen3-4B on one engine per GPU, with `--max-weight-staleness` shown as a commented-out option |
-| [`run_qwen3_30b_a3b_fully_async.py`](https://github.com/radixark/miles/blob/main/examples/fully_async/run_qwen3_30b_a3b_fully_async.py) | The same pattern on a 30B MoE, with `tp=8`, `ep=8`, and one 8-GPU rollout engine |
-| [`run_qwen3_5_4b_fully_async_eval.py`](https://github.com/radixark/miles/blob/main/examples/fully_async/run_qwen3_5_4b_fully_async_eval.py) | Both checkpoint eval backends behind one flag, `--eval-backend fleet` or `--eval-backend external` |
+| [`run_qwen3_30b_a3b_fully_async.py`](https://github.com/radixark/miles/blob/main/examples/infra_features/fully_async/run_qwen3_30b_a3b_fully_async.py) | The same pattern on a 30B MoE, with `tp=8`, `ep=8`, and one 8-GPU rollout engine |
+| [`run_qwen3_5_4b_fully_async_eval.py`](https://github.com/radixark/miles/blob/main/examples/infra_features/fully_async/run_qwen3_5_4b_fully_async_eval.py) | Both checkpoint eval backends behind one flag, `--eval-backend fleet` or `--eval-backend external` |
 | [`run_glm5_2_744b_a40b_daytona.py`](https://github.com/radixark/miles/blob/main/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py) | GLM-5.2 744B-A40B on 16 GB300 nodes, split 8 training and 8 inference, with multi-turn terminal-bench-2 episodes in per-task Daytona sandboxes. It runs 128 in-flight trajectories against a 64-sample train batch and evaluates on the shared rollout engines |
 
 ### Customizations
@@ -87,12 +86,12 @@ the driver's step schedule:
 1. The trainer drains `--rollout-batch-size` groups from the buffer, waiting if not
    enough have finished yet.
 2. It runs the optimizer step while the worker keeps generating.
-3. Every `--update-weights-interval` steps it pauses generation, broadcasts the new
-   weights, and resumes. The `--pause-generation-mode` flag decides how in-flight
-   requests survive that pause: the default `retract` returns them to the waiting queue
-   and recomputes their KV cache, while `in_place` freezes them and resumes on the
-   existing cache. Passing `abort` would kill them outright, which is why fully async
-   rejects it.
+3. Every `--update-weights-interval` steps it pauses generation, synchronizes the new
+   weights through the configured update mode, and resumes. The
+   `--pause-generation-mode` flag decides how in-flight requests survive that pause: the
+   default `retract` returns them to the waiting queue and recomputes their KV cache,
+   while `in_place` freezes them and resumes on the existing cache. Passing `abort`
+   would kill them outright, which is why fully async rejects it.
 
 Because generation spans those weight updates, the samples in one group can carry
 different weight versions. The gap between a group's oldest weight version and the
@@ -247,7 +246,7 @@ them explicitly with `--eval-sglang-*` if the fleet is large enough to want them
 ### Mode 3: External backend
 
 The contract lives in [`miles/rollout/checkpoint_eval.py`](https://github.com/radixark/miles/blob/main/miles/rollout/checkpoint_eval.py), with a
-reference implementation in [`examples/fully_async/external_eval_fn.py`](https://github.com/radixark/miles/blob/main/examples/fully_async/external_eval_fn.py).
+reference implementation in [`examples/infra_features/fully_async/external_eval_fn.py`](https://github.com/radixark/miles/blob/main/examples/infra_features/fully_async/external_eval_fn.py).
 
 Subclass `CheckpointEvalFn` and implement `evaluate_checkpoint(checkpoint_dir, input)`.
 The trainer hands over a snapshot path per eval point and owns dispatch, logging, and
