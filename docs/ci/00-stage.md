@@ -33,7 +33,7 @@ In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both reso
 
 ## What each stage does
 
-**Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. The ROCm resolver uses only its dispatch input, defaults to its dated `rocm/sgl-dev` tag, and uses that same default for PR, nightly, and weekly runs. Distinct from this, the **`run-ci-image` label** selects the image scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
+**Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. The ROCm resolver uses only its dispatch input, defaults to its undated `rocm/sgl-dev` tag, and uses that same default for PR, nightly, and weekly runs. Distinct from this, the **`run-ci-image` label** selects the image scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 
 **Policy resolution (`resolve-ci-policy`).**
 
