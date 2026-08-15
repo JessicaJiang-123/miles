@@ -23,6 +23,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_mxfp8: bool = False
     train_fp8: bool = False
     train_mxfp8: bool = False
+    save_artifacts: bool = True
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
@@ -81,14 +82,14 @@ def execute(args: ScriptArgs):
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
     else:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
-    ckpt_args = (
-        f"--hf-checkpoint {hf_checkpoint}/ "
-        f"--ref-load {ref_load_path} "
-        f"--load {load_save_path} "
-        f"--save {load_save_path} "
-        f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
-        f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
-    )
+    ckpt_args = f"--hf-checkpoint {hf_checkpoint}/ --ref-load {ref_load_path} "
+    if args.save_artifacts:
+        ckpt_args += (
+            f"--load {load_save_path} "
+            f"--save {load_save_path} "
+            f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
+            f"--save-retain-interval {2 if args.mode == 'debug_minimal' else 20} "
+        )
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -158,8 +159,9 @@ def execute(args: ScriptArgs):
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
         "--use-fault-tolerance "
-        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     )
+    if args.save_artifacts:
+        misc_args += f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
     misc_env_vars = {}
 
     if args.train_fp8 or args.train_mxfp8:
