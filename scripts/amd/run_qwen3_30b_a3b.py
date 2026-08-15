@@ -20,7 +20,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
     rollout_fp8: bool = False
+    rollout_mxfp8: bool = False
     train_fp8: bool = False
+    train_mxfp8: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
@@ -28,6 +30,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     def __post_init__(self):
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+
+        assert sum((self.rollout_fp8, self.rollout_mxfp8)) <= 1, "only one rollout precision mode can be enabled"
+        assert sum((self.train_fp8, self.train_mxfp8)) <= 1, "only one train precision mode can be enabled"
+        if any((self.rollout_mxfp8, self.train_mxfp8)):
+            assert self.hardware in ("MI350X", "MI355X"), "mxfp8 requires gfx950"
 
 
 def prepare(args: ScriptArgs):
@@ -39,6 +46,12 @@ def prepare(args: ScriptArgs):
     if args.rollout_fp8:
         U.exec_command_cpu(
             f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
+        )
+
+    if args.rollout_mxfp8:
+        U.exec_command_gpu(
+            f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
+            f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
         )
 
     if not args.enable_megatron_bridge:
@@ -64,6 +77,8 @@ def execute(args: ScriptArgs):
 
     if args.rollout_fp8:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}-FP8"
+    elif args.rollout_mxfp8:
+        hf_checkpoint = f"{args.model_dir}/{args.model_name}-MXFP8"
     else:
         hf_checkpoint = f"{args.model_dir}/{args.model_name}"
     ckpt_args = (
@@ -147,21 +162,26 @@ def execute(args: ScriptArgs):
     )
     misc_env_vars = {}
 
-    if args.train_fp8:
+    if args.train_fp8 or args.train_mxfp8:
+        recipe = "mxfp8" if args.train_mxfp8 else "blockwise"
         misc_args += (
             "--transformer-impl transformer_engine "
             "--bf16 "
             "--fp8-format e4m3 "
-            "--fp8-recipe blockwise "
+            f"--fp8-recipe {recipe} "
             "--no-gradient-accumulation-fusion "
         )
         misc_env_vars |= {
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "0",
             "GPU_MAX_HW_QUEUES": "1",
             # keep Ray from blanking HIP/CUDA visibility for the job entrypoint
             "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES": "1",
             "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
         }
+        if args.train_mxfp8:
+            misc_env_vars |= {"NVTE_ROCM_ENABLE_MXFP8": "1"}
+        else:
+            # unlike Hopper, ROCm needs pow2 weight scales to match the rollout engine
+            misc_env_vars |= {"NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "0"}
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
