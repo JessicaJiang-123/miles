@@ -205,8 +205,20 @@ def compute_mis_weights(
     ):
         add_ppl_metrics(train_log_prob, rollout_log_prob, loss_mask, metrics)
 
-    # only calculate mismatch metrics if TIS is not used
+    # Diagnostic-only mode: report the TIS statistics without returning weights, so
+    # the caller leaves pg_loss untouched. Lets a run measure how far the training and
+    # rollout policies drift apart without the correction itself perturbing training.
     if not args.use_tis:
+        for train_log_prob, rollout_log_prob, loss_mask in zip(
+            train_log_probs, rollout_log_probs, loss_masks, strict=False
+        ):
+            loss_mask = loss_mask.float()
+            log_ratio = compute_log_ratio(train_log_prob - rollout_log_prob, loss_mask, args.tis_level)
+            ratio = torch.exp(torch.clamp(log_ratio, min=-SAFETY_BOUND, max=SAFETY_BOUND))
+            bounded = torch.clamp(ratio, min=tis_lower_bound, max=args.tis_upper_bound)
+            metrics_append(metrics, "tis", ratio)
+            metrics_append(metrics, "tis_abs", (ratio - 1).abs())
+            metrics_append(metrics, "tis_clipfrac", (bounded != ratio).float())
         return None, loss_masks, metrics
 
     # handle each sequence independently
