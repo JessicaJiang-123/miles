@@ -12,14 +12,14 @@ from megatron.core.models.gpt.experimental_attention_variant_module_specs import
     get_transformer_block_with_experimental_attention_variant_spec,
 )
 from megatron.core.process_groups_config import ProcessGroupCollection
-from megatron.core.tensor_parallel.layers import ColumnParallelLinear
+from megatron.core.tensor_parallel.layers import set_tensor_model_parallel_attributes
 from megatron.core.tensor_parallel.mappings import (
     copy_to_tensor_model_parallel_region,
     gather_from_sequence_parallel_region,
     scatter_to_sequence_parallel_region,
 )
 from megatron.core.transformer.experimental_attention_variant.dsa import DSAIndexer, DSAIndexerSubmodules
-from megatron.core.transformer.module import MegatronModule
+from megatron.core.transformer.module import MegatronModule, mark_keep_in_fp32
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
@@ -66,6 +66,7 @@ class DeepSeekV4Attention(MegatronModule):
         attention_type: str = None,
         cp_comm_type: str = None,
         pg_collection=None,
+        name: str | None = None,
     ):
         _enable_deepseek_v4_tf32()
         super().__init__(config=config)
@@ -88,14 +89,14 @@ class DeepSeekV4Attention(MegatronModule):
         self.n_heads = config.num_attention_heads
         self.n_local_heads = self.n_heads // config.tensor_model_parallel_size
         self.q_lora_rank = config.q_lora_rank
-        self.o_lora_rank = config.dsv4_o_lora_rank
+        self.o_lora_rank = config.o_lora_rank
         self.head_dim = config.kv_lora_rank
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.nope_head_dim = self.head_dim - self.rope_head_dim
-        self.n_groups = config.dsv4_o_groups
+        self.n_groups = config.o_groups
         self.n_local_groups = self.n_groups // config.tensor_model_parallel_size
-        self.window_size = config.dsv4_window_size
-        self.compress_ratio = config.dsv4_compress_ratios[layer_id] if config.dsv4_compress_ratios else 0
+        self.window_size = config.csa_window_size
+        self.compress_ratio = config.csa_compress_ratios[layer_id] if config.csa_compress_ratios else 0
         self.eps = config.layernorm_epsilon
         self.use_fp8_qat = config.fp8 is not None
 
@@ -108,13 +109,14 @@ class DeepSeekV4Attention(MegatronModule):
         config_no_sp = copy.copy(config)
         config_no_sp.sequence_parallel = False
 
-        self.attn_sink = nn.Parameter(torch.empty(self.n_local_heads, dtype=torch.float32))
-        self.attn_sink._keep_fp32 = True
-        self.attn_sink.tensor_model_parallel = True
-        self.attn_sink.partition_dim = 0
-        self.attn_sink.partition_stride = 1
+        # The native module keeps the sink inside core_attention; mirror that level so a
+        # checkpoint written by either implementation names it the same way.
+        self.core_attention = nn.Module()
+        self.core_attention.attn_sink = nn.Parameter(torch.empty(self.n_local_heads, dtype=torch.float32))
+        mark_keep_in_fp32(self.core_attention.attn_sink)
+        set_tensor_model_parallel_attributes(self.core_attention.attn_sink, is_parallel=True, dim=0, stride=1)
 
-        self.wq_a = TELinear(
+        self.linear_q_down_proj = TELinear(
             self.dim,
             self.q_lora_rank,
             config=config,
@@ -124,8 +126,8 @@ class DeepSeekV4Attention(MegatronModule):
             skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
-        self.q_norm = TENorm(config_no_sp, self.q_lora_rank, eps=self.eps)
-        self.wq_b = TEColumnParallelLinear(
+        self.q_layernorm = TENorm(config_no_sp, self.q_lora_rank, eps=self.eps)
+        self.linear_q_up_proj = TEColumnParallelLinear(
             self.q_lora_rank,
             self.n_heads * self.head_dim,
             config=config_no_sp,
@@ -136,7 +138,7 @@ class DeepSeekV4Attention(MegatronModule):
             is_expert=False,
             tp_group=self.tp_group,
         )
-        self.wkv = TELinear(
+        self.linear_kv_proj = TELinear(
             self.dim,
             self.head_dim,
             config=config,
@@ -146,21 +148,26 @@ class DeepSeekV4Attention(MegatronModule):
             skip_weight_param_allocation=False,
             parallel_mode="duplicated",
         )
-        self.kv_norm = TENorm(config_no_sp, self.head_dim, eps=self.eps)
+        self.kv_layernorm = TENorm(config_no_sp, self.head_dim, eps=self.eps)
 
-        for p in list(self.wq_a.parameters()) + list(self.wkv.parameters()):
+        for p in list(self.linear_q_down_proj.parameters()) + list(self.linear_kv_proj.parameters()):
             p.sequence_parallel = False
 
-        self.wo_a = ColumnParallelLinear(
+        # A bare parameter, like the native module: it is only ever viewed and contracted,
+        # never called. Column-parallel over the group dimension, so it is declared here
+        # rather than through ColumnParallelLinear, which would add a .weight level the
+        # native checkpoint does not have.
+        o_group_proj = torch.empty(
+            self.n_local_groups * self.o_lora_rank,
             self.n_heads * self.head_dim // self.n_groups,
-            self.n_groups * self.o_lora_rank,
-            config=config_no_sp,
-            init_method=config.init_method,
-            bias=False,
-            gather_output=False,
+            device=torch.cuda.current_device(),
+            dtype=config.params_dtype,
         )
-        assert self.wo_a.weight.dtype == torch.bfloat16
-        self.wo_b = TERowParallelLinear(
+        config.init_method(o_group_proj)
+        self.linear_o_group_proj = nn.Parameter(o_group_proj)
+        set_tensor_model_parallel_attributes(self.linear_o_group_proj, is_parallel=True, dim=0, stride=1)
+        assert self.linear_o_group_proj.dtype == torch.bfloat16
+        self.linear_proj = TERowParallelLinear(
             self.n_groups * self.o_lora_rank,
             self.dim,
             config=config_no_sp,
@@ -175,7 +182,7 @@ class DeepSeekV4Attention(MegatronModule):
         self.sequence_parallel = config.sequence_parallel
 
         if self.compress_ratio:
-            self.compressor = DeepSeekV4Compressor(
+            self.core_attention.compressor = DeepSeekV4Compressor(
                 config=config,
                 head_dim=self.head_dim,
                 compress_ratio=self.compress_ratio,
@@ -186,7 +193,9 @@ class DeepSeekV4Attention(MegatronModule):
                 indexer_impl = os.environ.get("V4_INDEXER_IMPL", "tilelang")
                 topk_backend = config.miles_dsa_topk_backend
                 if indexer_impl == "tilelang":
-                    self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
+                    self.core_attention.indexer = V4Indexer(
+                        config=config, pg_collection=pg_collection, layer_id=layer_id
+                    )
                 else:
                     if topk_backend != "torch":
                         raise ValueError(
@@ -199,9 +208,9 @@ class DeepSeekV4Attention(MegatronModule):
                         k_norm=TENorm,
                         linear_weights_proj=TELinear,
                     )
-                    self.indexer = DSAIndexer(config=config, submodules=indexer_submodules)
+                    self.core_attention.indexer = DSAIndexer(config=config, submodules=indexer_submodules)
             else:
-                self.indexer = None
+                self.core_attention.indexer = None
 
     def sharded_state_dict(
         self,
@@ -212,9 +221,16 @@ class DeepSeekV4Attention(MegatronModule):
         ans = super().sharded_state_dict(prefix, sharded_offsets, metadata)
         ans.update(
             make_sharded_tensors_for_checkpoint(
-                state_dict={"attn_sink": self.attn_sink},
+                state_dict={
+                    "core_attention.attn_sink": self.core_attention.attn_sink,
+                    # Bare parameters: nothing else declares how they shard.
+                    "linear_o_group_proj": self.linear_o_group_proj,
+                },
                 prefix=prefix,
-                tensor_parallel_layers_axis_map={"attn_sink": 0},
+                tensor_parallel_layers_axis_map={
+                    "core_attention.attn_sink": 0,
+                    "linear_o_group_proj": 0,
+                },
                 sharded_offsets=sharded_offsets,
                 tp_group=self.tp_group,
                 dp_cp_group=metadata["dp_cp_group"],
@@ -234,7 +250,7 @@ class DeepSeekV4Attention(MegatronModule):
         attention_bias=None,
         packed_seq_params=None,
         sequence_len_offset=None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, None]:
         if self.sequence_parallel:
             hidden_states = gather_from_sequence_parallel_region(
                 hidden_states, tensor_parallel_output_grad=False, group=self.tp_group
@@ -246,7 +262,7 @@ class DeepSeekV4Attention(MegatronModule):
         thd_layout = ThdLayout.from_packed_seq_params(
             packed_seq_params, cp_rank=self.cp_rank, seqlen_local=seqlen_local
         )
-        rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
+        rope_base = self.config.csa_compress_rotary_base if self.compress_ratio else self.config.rotary_base
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
         )
@@ -262,17 +278,17 @@ class DeepSeekV4Attention(MegatronModule):
         ratio = self.compress_ratio
         rd = self.rope_head_dim
 
-        q_after_wq_a = self.wq_a(x)[0]
-        qr = q = self.q_norm(q_after_wq_a)
-        q_after_wq_b = self.wq_b(q)[0]
+        q_after_wq_a = self.linear_q_down_proj(x)[0]
+        qr = q = self.q_layernorm(q_after_wq_a)
+        q_after_wq_b = self.linear_q_up_proj(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
         q_fp32 = q.float()
         q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
-        kv_after_wkv = self.wkv(x)[0]
-        kv_vanilla = self.kv_norm(kv_after_wkv)
+        kv_after_wkv = self.linear_kv_proj(x)[0]
+        kv_vanilla = self.kv_layernorm(kv_after_wkv)
         kv_vanilla = kv_vanilla.clone()
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
         if self.use_fp8_qat:
@@ -299,7 +315,7 @@ class DeepSeekV4Attention(MegatronModule):
                 thd_layout.hidden_compact, thd_layout.compressed_group_ids = CompressorInputCompact.apply(
                     x_sbd, boundary, thd_layout.cu_seqlens, thd_layout.global_start, ratio, c_cap
                 )
-                compressor_out = self.compressor(thd_layout.hidden_compact, thd_layout)
+                compressor_out = self.core_attention.compressor(thd_layout.hidden_compact, thd_layout)
                 thd_layout.seq_to_rank_row = compressed_rank_layout(
                     thd_layout.cu_seqlens,
                     compressed_cu_seqlens(thd_layout.cu_seqlens, ratio),
@@ -309,7 +325,7 @@ class DeepSeekV4Attention(MegatronModule):
                     c_cap=c_cap,
                 )
             else:
-                compressor_out = self.compressor(x_sbd, thd_layout)
+                compressor_out = self.core_attention.compressor(x_sbd, thd_layout)
             if thd_layout is None:
                 kv_compress_sbd = compressor_out
             else:
@@ -332,18 +348,20 @@ class DeepSeekV4Attention(MegatronModule):
 
         if self.compress_ratio:
             kv_compress_offset = seqlen_global
-            if self.indexer is not None:
+            if self.core_attention.indexer is not None:
                 x_sbd = einops.rearrange(x, "b s d -> s b d")
                 qr_sbd = einops.rearrange(qr, "b s d -> s b d")
                 if self.sequence_parallel:
                     x_sbd = scatter_to_sequence_parallel_region(x_sbd, group=self.tp_group)
                     qr_sbd = scatter_to_sequence_parallel_region(qr_sbd, group=self.tp_group)
-                if isinstance(self.indexer, V4Indexer):
-                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, thd_layout=thd_layout)
+                if isinstance(self.core_attention.indexer, V4Indexer):
+                    compress_topk_idxs = self.core_attention.indexer(x_sbd, qr_sbd, thd_layout=thd_layout)
                 else:
                     assert thd_layout is None, "DSAIndexer is BSHD-only; THD needs V4_INDEXER_IMPL=tilelang."
                     indexer_mask = self._compute_indexer_mask(q_positions=q_positions, seqlen_global=seqlen_global)
-                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None)
+                    compress_topk_idxs = self.core_attention.indexer(
+                        x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None
+                    )
                 if thd_layout is None:
                     q_first_invalid_group = (q_positions + 1).unsqueeze(1) // ratio
                     valid = (compress_topk_idxs >= 0) & (compress_topk_idxs < q_first_invalid_group)
@@ -382,7 +400,7 @@ class DeepSeekV4Attention(MegatronModule):
             topk_idxs = torch.cat([topk_idxs, compress_topk_idxs], dim=-1)
         topk_idxs = topk_idxs.int()
 
-        assert self.attn_sink.dtype == torch.float32
+        assert self.core_attention.attn_sink.dtype == torch.float32
 
         if self.cp_size > 1:
             kv_vanilla = all_gather_cp(kv_vanilla, dim=1, cp_group=self.cp_group)
@@ -397,21 +415,21 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv = copy_to_tensor_model_parallel_region(kv, group=self.tp_group, all_reduce_grad_fp32=True)
 
-        o = sparse_attn_tilelang(q, kv, self.attn_sink, topk_idxs, self.softmax_scale)
+        o = sparse_attn_tilelang(q, kv, self.core_attention.attn_sink, topk_idxs, self.softmax_scale)
 
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
-        wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)
+        wo_a = self.linear_o_group_proj.view(self.n_local_groups, self.o_lora_rank, -1)
         o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
-        x, _ = self.wo_b(o.flatten(2))
+        x, _ = self.linear_proj(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")
 
         if self.sequence_parallel:
             output = scatter_to_sequence_parallel_region(output, group=self.tp_group)
 
-        return output
+        return output, None
 
     def _compute_indexer_mask(self, *, q_positions: torch.Tensor, seqlen_global: int) -> torch.Tensor:
         """Dense causal mask for legacy DSAIndexer path."""
@@ -432,9 +450,13 @@ def _dsv4_attention_module_spec(config, backend=None):
 
 
 def get_dsv4_spec(args, config, vp_stage):
-    """
+    """Build the DeepSeek-V4 layer spec for the implementation --dsv4-impl selects.
+
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
+    if args.dsv4_impl == "megatron":
+        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 

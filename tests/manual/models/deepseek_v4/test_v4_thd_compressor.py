@@ -73,7 +73,7 @@ def _compressor(compress_ratio):
             qk_pos_emb_head_dim=64,
             layernorm_epsilon=1e-6,
             fp8=None,
-            dsv4_compress_rope_theta=160000,
+            csa_compress_rotary_base=160000,
             original_max_position_embeddings=65536,
             rotary_scaling_factor=4,
             beta_fast=32,
@@ -86,8 +86,8 @@ def _compressor(compress_ratio):
     # A checkpoint fills these in production; left alone they are raw memory, i.e. NaN.
     with torch.no_grad():
         c.ape.normal_(0, 0.02)
-        c.wkv.weight.normal_(0, 0.02)
-        c.wgate.weight.normal_(0, 0.02)
+        c.linear_wkv.weight.normal_(0, 0.02)
+        c.linear_wgate.weight.normal_(0, 0.02)
     return c
 
 
