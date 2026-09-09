@@ -200,22 +200,21 @@ def _run_train(
     return debug_root / qkv_format / "dump_details"
 
 
-def _load_rank_zero_train_data(directory: Path) -> dict:
-    dump_files = sorted(directory.glob("*.pt"))
-    expected_names = [f"{_ROLLOUT_ID}_{rank}.pt" for rank in range(_NUM_GPUS)]
-    assert [path.name for path in dump_files] == expected_names
+def _load_train_data_shard(directory: Path) -> dict:
+    # Train data is dumped once per (dp, cp) shard; this run has dp=1, cp=1.
+    dump_files = sorted(directory.glob(f"{_ROLLOUT_ID}_*.pt"))
+    assert len(dump_files) == 1, [path.name for path in dump_files]
 
     payload = torch.load(dump_files[0], map_location="cpu", weights_only=False)
     assert payload["rollout_id"] == 0
-    assert payload["rank"] == 0
     rollout_data = payload["rollout_data"]
     assert rollout_data["sample_indices"] == list(range(_NUM_SAMPLES))
     return rollout_data
 
 
 def _compare_train_log_probs(bshd_dir: Path, thd_dir: Path) -> None:
-    bshd = _load_rank_zero_train_data(bshd_dir)
-    thd = _load_rank_zero_train_data(thd_dir)
+    bshd = _load_train_data_shard(bshd_dir)
+    thd = _load_train_data_shard(thd_dir)
     bshd_log_probs: list[torch.Tensor] = []
     thd_log_probs: list[torch.Tensor] = []
 
