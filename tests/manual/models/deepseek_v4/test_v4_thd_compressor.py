@@ -5,7 +5,7 @@ rank then mapping the gathered rows back must equal compressing it once.
 
 Not in CI: the compressor imports the fp8 kernels, and its bf16-in/fp32-out matmul has no CPU
 kernel outside a ROCm build. The CP collectives are slicing and concatenation here; the real
-ones are checked by tests/e2e/precision/test_dsv4_thd_cp_correctness.py.
+ones are checked by tests/fast-gpu/test_dsv4_thd_cp_correctness.py.
 """
 
 from types import SimpleNamespace

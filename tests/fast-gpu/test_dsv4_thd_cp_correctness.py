@@ -1,8 +1,8 @@
 """Distributed correctness test for the DeepSeek-V4 packed-THD Context Parallel layout.
 
 Run with:
-    torchrun --nproc_per_node=2 tests/e2e/precision/test_dsv4_thd_cp_correctness.py
-    torchrun --nproc_per_node=4 tests/e2e/precision/test_dsv4_thd_cp_correctness.py
+    torchrun --nproc_per_node=2 tests/fast-gpu/test_dsv4_thd_cp_correctness.py
+    torchrun --nproc_per_node=4 tests/fast-gpu/test_dsv4_thd_cp_correctness.py
 
 A compressed group can straddle a CP split, so each rank pulls the rows its left neighbour
 owns, compacts its own groups into fixed-capacity slots, and all-gathers. That decides where
@@ -30,7 +30,7 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
 )
 
 register_cuda_ci(est_time=60, suite="stage-c-4-gpu-h200", labels=["precision", "megatron"])
-register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["precision"])
+register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
 SEGMENTS = [1500, 2093, 500, 3]  # neither ratio divides these; the last is shorter than both
 RATIOS = (4, 128)  # one layer that overlap-transforms, one that does not

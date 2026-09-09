@@ -17,7 +17,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
 )
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, get_indexer_cu_seqlens_thd, get_q_positions_thd
+from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, get_compress_cu_seqlens_thd, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
@@ -161,7 +161,7 @@ class V4Indexer(MegatronModule):
                 cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
                 cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         else:
-            cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
+            cu_ks, cu_ke = get_compress_cu_seqlens_thd(
                 thd_layout.cu_seqlens,
                 thd_layout.cu_seqlens_compressed,
                 ratio=self.compress_ratio,

@@ -5,7 +5,7 @@ sample exactly the rows it would get on its own. The sparse-attention kernel tak
 `cu_seqlens`, so `topk_idxs` alone decides what a query can see.
 
 The compressor lives in tests/manual/models/deepseek_v4/, which a CPU image cannot run, and
-the CP collectives in tests/e2e/precision/test_dsv4_thd_cp_correctness.py.
+the CP collectives in tests/fast-gpu/test_dsv4_thd_cp_correctness.py.
 """
 
 import random

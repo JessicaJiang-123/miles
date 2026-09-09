@@ -42,8 +42,8 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     compressed_cu_seqlens,
     compressed_rank_layout,
     exchange_cp_boundary_hidden,
+    get_compress_cu_seqlens_thd,
     get_compress_topk_idxs_thd,
-    get_indexer_cu_seqlens_thd,
     get_q_positions_thd,
     get_window_topk_idxs_thd,
     to_rank_major_rows,
@@ -361,7 +361,7 @@ class DeepSeekV4Attention(MegatronModule):
                     valid = (compress_topk_idxs >= 0) & (compress_topk_idxs < q_first_invalid_group)
                 else:
                     # The range the indexer kernel scored within, so a pick from another segment dies here.
-                    cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
+                    cu_ks, cu_ke = get_compress_cu_seqlens_thd(
                         thd_layout.cu_seqlens,
                         thd_layout.cu_seqlens_compressed,
                         ratio=ratio,

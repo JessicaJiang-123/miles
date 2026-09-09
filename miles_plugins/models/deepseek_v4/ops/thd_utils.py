@@ -22,8 +22,8 @@ class ThdLayout:
     """How this rank's packed stream is laid out; ``None`` stands for the unpacked one.
 
     The first three fields come from the packed sequence parameters. The rest are filled in as
-    the forward runs: the compaction ones only under CP, where a compressed group can straddle
-    the split, and ``cu_seqlens_compressed`` once the compressor has grouped the stream.
+    the forward runs: ``cu_seqlens_compressed`` before the compressor is called, and the
+    compaction ones only under CP, where a compressed group can straddle the split.
     """
 
     cu_seqlens: Tensor
@@ -65,8 +65,8 @@ def batch_of_row(cu_seqlens: Tensor, total_rows: int, global_start: int = 0) -> 
 def compressed_cu_seqlens(cu_seqlens: Tensor, ratio: int) -> Tensor:
     """Cumulative compressed lengths, flooring each segment's tail.
 
-    A pure function of ``cu_seqlens``, so the CP path can build it without the compressor,
-    which returns None once its input is pre-grouped.
+    A pure function of ``cu_seqlens``, so the attention forward fills ``ThdLayout`` with it
+    before the compressor runs.
     """
     lens = torch.div(cu_seqlens[1:] - cu_seqlens[:-1], ratio, rounding_mode="floor")
     return torch.cat([torch.zeros_like(cu_seqlens[:1]), lens.cumsum(0).to(cu_seqlens.dtype)])
@@ -120,6 +120,35 @@ def to_rank_major_rows(idxs: Tensor, seq_to_rank_row: Tensor, valid: Tensor) -> 
     return rows, valid & (rows >= 0)
 
 
+def get_compress_cu_seqlens_thd(
+    cu_seqlens: Tensor,
+    cu_seqlens_compressed: Tensor,
+    *,
+    ratio: int,
+    total_tokens: int,
+    global_start: int = 0,
+) -> tuple[Tensor, Tensor]:
+    """Get the compressed rows each packed query may see, as a half-open range.
+
+    A query sees its own segment only, up to ``(pos_in_seg + 1) // ratio`` and never past
+    what that segment produced; the BSHD ``ks = 0`` convention would let it score entries
+    of earlier segments once all samples share one flat stream.
+
+    Returns:
+        ``(cu_ks, cu_ke)`` int32 ``[total_tokens]``, indices into the compressed keys alone,
+        not the concatenated KV. The indexer kernel takes them as is;
+        ``get_compress_topk_idxs_thd`` expands them into explicit indices.
+    """
+    device = cu_seqlens.device
+    batch_ids = batch_of_row(cu_seqlens, total_tokens, global_start)
+    token_idx = torch.arange(total_tokens, device=device) + global_start
+    pos_in_seg = token_idx - cu_seqlens[batch_ids]
+
+    cu_ks = cu_seqlens_compressed[batch_ids]
+    cu_ke = torch.minimum(cu_ks + (pos_in_seg + 1) // ratio, cu_seqlens_compressed[batch_ids + 1])
+    return cu_ks.int(), cu_ke.int()
+
+
 def get_compress_topk_idxs_thd(
     cu_seqlens: Tensor,
     cu_seqlens_compressed: Tensor,
@@ -137,7 +166,7 @@ def get_compress_topk_idxs_thd(
     own segment produced, so segments shorter than ``ratio`` fall back to the window alone.
 
     Args:
-        cu_seqlens_compressed: ``[n_seg + 1]`` cumulative compressed lengths from the compressor.
+        cu_seqlens_compressed: ``[n_seg + 1]`` cumulative compressed lengths, see ``compressed_cu_seqlens``.
         max_n_compressed: column count, an upper bound on any segment's compressed length.
         kv_offset: rows the compressed block starts after; defaults to ``total_tokens``, which
             only holds without CP, where the rank owns the whole stream.
@@ -150,48 +179,17 @@ def get_compress_topk_idxs_thd(
     device = cu_seqlens.device
     if kv_offset is None:
         kv_offset = total_tokens
-    batch_ids = batch_of_row(cu_seqlens, total_tokens, global_start)
-    token_idx = torch.arange(total_tokens, device=device) + global_start
-    pos_in_seg = token_idx - cu_seqlens[batch_ids]
-    seg_compressed_lens = cu_seqlens_compressed[1:] - cu_seqlens_compressed[:-1]
+    cu_ks, cu_ke = get_compress_cu_seqlens_thd(
+        cu_seqlens, cu_seqlens_compressed, ratio=ratio, total_tokens=total_tokens, global_start=global_start
+    )
 
-    n_visible = ((pos_in_seg + 1) // ratio).clamp(max=seg_compressed_lens[batch_ids])
     col_idx = torch.arange(max_n_compressed, device=device).unsqueeze(0)
-    seq_major_idx = cu_seqlens_compressed[batch_ids].unsqueeze(1) + col_idx
-    visible = col_idx < n_visible.unsqueeze(1)
+    seq_major_idx = cu_ks.unsqueeze(1) + col_idx
+    visible = col_idx < (cu_ke - cu_ks).unsqueeze(1)
     if seq_to_rank_row is not None:
         seq_major_idx, visible = to_rank_major_rows(seq_major_idx, seq_to_rank_row, visible)
     compress_topk_idxs = torch.where(visible, kv_offset + seq_major_idx, -1)
     return compress_topk_idxs.unsqueeze(0)
-
-
-def get_indexer_cu_seqlens_thd(
-    cu_seqlens: Tensor,
-    cu_seqlens_compressed: Tensor,
-    *,
-    ratio: int,
-    total_tokens: int,
-    global_start: int = 0,
-) -> tuple[Tensor, Tensor]:
-    """Get the indexer kernel's per-query KV range for a packed stream.
-
-    Replaces the BSHD ``ks = 0`` convention, which would let a query score compressed
-    entries belonging to earlier segments once all samples share one flat stream.
-
-    Returns:
-        ``(cu_ks, cu_ke)`` int32 ``[total_tokens]``, a half-open range into the compressed
-        keys alone (what the indexer scores), not the concatenated KV: the query's own
-        segment, up to ``(pos_in_seg + 1) // ratio`` and never past what that segment
-        produced.
-    """
-    device = cu_seqlens.device
-    batch_ids = batch_of_row(cu_seqlens, total_tokens, global_start)
-    token_idx = torch.arange(total_tokens, device=device) + global_start
-    pos_in_seg = token_idx - cu_seqlens[batch_ids]
-
-    cu_ks = cu_seqlens_compressed[batch_ids]
-    cu_ke = torch.minimum(cu_ks + (pos_in_seg + 1) // ratio, cu_seqlens_compressed[batch_ids + 1])
-    return cu_ks.int(), cu_ke.int()
 
 
 # --------------------------------------------------------------------------------------
