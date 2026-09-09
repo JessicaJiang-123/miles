@@ -59,6 +59,7 @@ def _prepare_args() -> ScriptArgs:
     return ScriptArgs(
         run_id="prepare",
         model_name=_MODEL_NAME,
+        dsv4_impl="miles",
         task="gsm8k",
         enable_eval=False,
         num_nodes=1,
@@ -100,6 +101,7 @@ def _run_args(
     return ScriptArgs(
         run_id=run_id,
         model_name=_MODEL_NAME,
+        dsv4_impl="miles",
         task="gsm8k",
         enable_eval=False,
         num_nodes=1,
