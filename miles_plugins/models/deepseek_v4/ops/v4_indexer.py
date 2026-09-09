@@ -17,12 +17,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
 )
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from miles_plugins.models.deepseek_v4.ops.thd_utils import (
-    ThdLayout,
-    compressed_cu_seqlens,
-    get_indexer_cu_seqlens_thd,
-    get_q_positions_thd,
-)
+from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, get_indexer_cu_seqlens_thd, get_q_positions_thd
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
@@ -139,18 +134,12 @@ class V4Indexer(MegatronModule):
         if self.use_fp8_qat:
             q = fp8_simulate_qat(q, 128)
 
-        pre_grouped = thd_layout is not None and thd_layout.hidden_compact is not None
-        compressor_out = self.compressor(thd_layout.hidden_compact if pre_grouped else x, thd_layout)
-        if thd_layout is None:
-            k = compressor_out
-        else:
-            k, cu_seqlens_compressed = compressor_out
-            if cu_seqlens_compressed is None:
-                cu_seqlens_compressed = compressed_cu_seqlens(thd_layout.cu_seqlens, self.compress_ratio)
-            if k is None:
-                # Nothing to score when no segment reaches compress_ratio; -1 leaves each query
-                # on its sliding window.
-                return torch.full((bsz, seqlen, self.index_topk), -1, dtype=torch.int32, device=x.device)
+        pre_grouped = thd_layout is not None and thd_layout.compressed_group_ids is not None
+        k = self.compressor(thd_layout.hidden_compact if pre_grouped else x, thd_layout)
+        if k is None:
+            # Nothing to score when no segment reaches compress_ratio; -1 leaves each query
+            # on its sliding window.
+            return torch.full((bsz, seqlen, self.index_topk), -1, dtype=torch.int32, device=x.device)
 
         weights, _ = self.linear_weights_proj(x)
         softmax_scale = self.index_head_dim**-0.5
@@ -174,7 +163,7 @@ class V4Indexer(MegatronModule):
         else:
             cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
                 thd_layout.cu_seqlens,
-                cu_seqlens_compressed,
+                thd_layout.cu_seqlens_compressed,
                 ratio=self.compress_ratio,
                 total_tokens=seqlen,
                 global_start=thd_layout.global_start,

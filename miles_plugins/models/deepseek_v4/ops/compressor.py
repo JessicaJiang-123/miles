@@ -210,8 +210,7 @@ class DeepSeekV4Compressor(nn.Module):
                 grouped when the layout carries compressed_group_ids.
             thd_layout: packed-stream layout.
         Returns:
-            (k, cu_seqlens_compressed) with k [total_comp, batch, head_dim], or
-            (None, cu_seqlens_compressed) when no segment reaches compress_ratio.
+            k [total_comp, batch, head_dim], or None when no segment reaches compress_ratio.
         """
         cu_seqlens = thd_layout.cu_seqlens
         compressed_group_ids = thd_layout.compressed_group_ids
@@ -232,14 +231,13 @@ class DeepSeekV4Compressor(nn.Module):
                     "Pre-grouped compressor input needs max_seqlen: its group ids address "
                     "positions past the compacted row count."
                 )
-            cu_seqlens_compressed = None
             local_pos = compressed_group_ids
             total_comp = local_pos.size(0)
         else:
             cu_seqlens_compressed = compressed_cu_seqlens(cu_seqlens, ratio)
             total_comp = int(cu_seqlens_compressed[-1])
             if total_comp == 0:
-                return None, cu_seqlens_compressed
+                return None
 
         kv = linear_bf16_fp32(x, self.linear_wkv.weight)
         score = linear_bf16_fp32(x, self.linear_wgate.weight)
@@ -295,7 +293,7 @@ class DeepSeekV4Compressor(nn.Module):
                 kv = kv.clone()
                 kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
 
-        return kv, cu_seqlens_compressed
+        return kv
 
     def forward(self, x: torch.Tensor, thd_layout: ThdLayout | None = None):
         """
@@ -304,8 +302,8 @@ class DeepSeekV4Compressor(nn.Module):
                 when thd_layout is given.
             thd_layout: packed-stream layout, or None when unpacked.
         Returns:
-            k: [seqlen // compress_ratio, batch, head_dim] SBHD layout, or
-                (k, cu_seqlens_compressed) for THD packing.
+            k: [seqlen // compress_ratio, batch, head_dim] SBHD layout; [total_comp, batch,
+                head_dim], or None when no segment reaches compress_ratio, for THD packing.
         """
         if thd_layout is not None:
             return self._forward_thd(x, thd_layout)

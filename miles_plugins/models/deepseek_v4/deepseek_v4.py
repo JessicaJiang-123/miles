@@ -305,34 +305,28 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv_compress = None
         if self.compress_ratio:
-            # Compress before building indices: THD compressed-group counts come from the compressor.
+            # Ahead of the indexer, which reuses the CP compaction and the row map.
             x_sbd = einops.rearrange(x, "b s d -> s b d")
-            if thd_layout is not None and self.cp_size > 1:
-                # A group can straddle the CP split, so pull the rows the previous rank owns
-                # and compact the groups this rank produces into fixed-capacity slots.
-                boundary = exchange_cp_boundary_hidden(x_sbd, ratio=ratio, cp_group=self.cp_group)
-                c_cap = compact_group_capacity(seqlen_local, ratio)
-                thd_layout.hidden_compact, thd_layout.compressed_group_ids = CompressorInputCompact.apply(
-                    x_sbd, boundary, thd_layout.cu_seqlens, thd_layout.global_start, ratio, c_cap
-                )
-                compressor_out = self.core_attention.compressor(thd_layout.hidden_compact, thd_layout)
-                thd_layout.seq_to_rank_row = compressed_rank_layout(
-                    thd_layout.cu_seqlens,
-                    compressed_cu_seqlens(thd_layout.cu_seqlens, ratio),
-                    l_local=seqlen_local,
-                    cp_size=self.cp_size,
-                    ratio=ratio,
-                    c_cap=c_cap,
-                )
-            else:
-                compressor_out = self.core_attention.compressor(x_sbd, thd_layout)
-            if thd_layout is None:
-                kv_compress_sbd = compressor_out
-            else:
-                kv_compress_sbd, thd_layout.cu_seqlens_compressed = compressor_out
-                if thd_layout.cu_seqlens_compressed is None:
-                    # The pre-grouped path cannot derive it; it is a pure function of cu_seqlens.
-                    thd_layout.cu_seqlens_compressed = compressed_cu_seqlens(thd_layout.cu_seqlens, ratio)
+            if thd_layout is not None:
+                thd_layout.cu_seqlens_compressed = compressed_cu_seqlens(thd_layout.cu_seqlens, ratio)
+                if self.cp_size > 1:
+                    # A group can straddle the CP split, so pull the rows the previous rank owns
+                    # and compact the groups this rank produces into fixed-capacity slots.
+                    boundary = exchange_cp_boundary_hidden(x_sbd, ratio=ratio, cp_group=self.cp_group)
+                    c_cap = compact_group_capacity(seqlen_local, ratio)
+                    thd_layout.hidden_compact, thd_layout.compressed_group_ids = CompressorInputCompact.apply(
+                        x_sbd, boundary, thd_layout.cu_seqlens, thd_layout.global_start, ratio, c_cap
+                    )
+                    thd_layout.seq_to_rank_row = compressed_rank_layout(
+                        thd_layout.cu_seqlens,
+                        thd_layout.cu_seqlens_compressed,
+                        l_local=seqlen_local,
+                        cp_size=self.cp_size,
+                        ratio=ratio,
+                        c_cap=c_cap,
+                    )
+                    x_sbd = thd_layout.hidden_compact
+            kv_compress_sbd = self.core_attention.compressor(x_sbd, thd_layout)
             if kv_compress_sbd is not None:
                 kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
 
