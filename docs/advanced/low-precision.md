@@ -315,11 +315,6 @@ whose contraction axis does not match a one-dimensional scaling layout.
 | AMD MI350X / MI355X | ✅ | ✅ | ✗ | ✗ |
 | AMD MI300X / MI325X | ✅ | ✗ | ✗ | ✗ |
 
-On MI350X / MI355X, FP8 block-wise is validated through the `scripts/amd/` DeepSeek-V4-Flash
-and Qwen3-30B-A3B recipes; the two ROCm CI tests that exercise it
-(`test_deepseek_v4_flash_4layer_ci.py` for training, `test_amd_moriep_fp8_bridge.py` for
-rollout) are registered but disabled.
-
 ## When BF16 is enough
 
 * Dense models below ~30 B.
