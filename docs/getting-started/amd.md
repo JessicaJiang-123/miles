@@ -15,29 +15,25 @@ workflows and published to Docker Hub under
 
 | Image | ROCm | GPUs | Notes |
 |---|---|---|---|
-| `rocm/sgl-dev:miles-rocm720-mi35x` | 7.2 | MI350X / MI355X | Python 3.10 — the image the ROCm CI runs |
-| `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 |
+| `rocm/sgl-dev:miles-rocm10-mi35x` | 10 | MI350X / MI355X | Python 3.12 — the image the nightly tests run on |
+| `rocm/sgl-dev:miles-rocm720-mi35x` | 7.2 | MI350X / MI355X | Python 3.10 |
 | `rocm/sgl-dev:miles-rocm700-mi30x` | 7.0 | MI300X / MI325X | Not rebuilt daily — last built 2026-09-08 |
 
 Each undated tag moves with every build; append `-YYYYMMDD` (e.g.
-`miles-rocm720-mi35x-20260910`) to pin one. The recipes below are validated on
-MI350X / MI355X (`gfx950`); the Qwen3 launchers accept only `MI350X` / `MI355X` in
-`--hardware` and do not run on MI300X / MI325X as shipped.
+`miles-rocm10-mi35x-20260916`) to pin one.
 
 To build an image yourself, `docker/Dockerfile.rocm` holds the recipe:
 
 ```bash
-python docker/build.py --variant rocm720-mi35x --image-tag dev    # or rocm10-mi35x
+python docker/build.py --variant rocm10-mi35x --image-tag dev    # or rocm720-mi35x
 ```
-
-`dev` writes the undated tag plus a `-YYYYMMDDHHMM` sibling.
 
 ## Start the container
 
 On the **host**:
 
 ```bash
-docker pull rocm/sgl-dev:miles-rocm720-mi35x
+docker pull rocm/sgl-dev:miles-rocm10-mi35x
 
 docker run --rm \
   --device /dev/kfd --device /dev/dri --group-add video --group-add render \
@@ -45,7 +41,7 @@ docker run --rm \
   --shm-size 128G \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --network=host \
-  -it rocm/sgl-dev:miles-rocm720-mi35x /bin/bash
+  -it rocm/sgl-dev:miles-rocm10-mi35x /bin/bash
 ```
 
 That drops you into a shell inside the container, with Miles at `/root/miles`, Megatron-LM
@@ -75,40 +71,7 @@ cd /root/miles
 python scripts/amd/run_qwen3_4b.py --hardware MI355X    # or MI350X
 ```
 
-On the two Qwen3 launchers, `--hardware` sets the GPU count per node and defaults to
-auto-detection, and the launcher exports the Ray HIP visibility variables so Ray and PyTorch
-agree on the device list; `run_qwen3_30b_a3b.py` also takes `--train-fp8` and `--rollout-fp8`.
-The DeepSeek-V4, GLM-5.2, and Inkling launchers take `--num-nodes` and `--num-gpus-per-node`
-and run as subcommands:
-
-```bash
-python scripts/amd/run_deepseek_v4.py train --model-name DeepSeek-V4-Flash-FP8 \
-  --num-nodes 4 --num-gpus-per-node 8
-```
-
-The CUDA launchers under `scripts/` do not accept `MI3xx` in `--hardware`; use the
-`scripts/amd/` counterpart.
-
-| Model | Launcher | Verified on |
-|---|---|---|
-| Qwen3-4B | `scripts/amd/run_qwen3_4b.py` | 1 node × 8 MI350X / MI355X |
-| Qwen3-30B-A3B | `scripts/amd/run_qwen3_30b_a3b.py` | 1 or 2 nodes × 8 MI350X / MI355X |
-| DeepSeek-V4-Flash-FP8 | `scripts/amd/run_deepseek_v4.py` | 4 nodes × 8 MI355X, FP8 block-wise training |
-| Inkling-Small (4-layer slice) | `scripts/amd/run_inkling.py` | 4 GPUs, CI smoke test |
-| GLM-5.2 (5-layer slice) | `scripts/amd/run_glm5_2_744b_a40b.py` | 4 GPUs — ROCm CI test registered but disabled |
-
-Training a different model? See [Models](/models/index) for the per-model recipes; the
-launcher flags carry over, the `--hardware` presets do not.
-
-## CI
-
-Adding the `run-ci-amd` label to a pull request runs the ROCm tests registered with the
-`amd` label in `stage-c-4-gpu-mi350` on the 4-GPU MI350 runners, against
-`rocm/sgl-dev:miles-rocm720-mi35x`; any other `run-ci-<label>` selects the ROCm tests
-carrying that label. The `nightly-stage-c-*-mi350` suites run only in the sgl-project/sglang
-nightly. The daily image builds and MI355X test runs are tracked in
-[`radixark/miles#2256`](https://github.com/radixark/miles/issues/2256); the AMD roadmap is
-[`radixark/miles#2025`](https://github.com/radixark/miles/issues/2025).
+The other recipes under `scripts/amd/` launch the same way.
 
 ## Next steps
 
